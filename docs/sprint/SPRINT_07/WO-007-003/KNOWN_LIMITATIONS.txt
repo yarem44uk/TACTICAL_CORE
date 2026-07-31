@@ -1,0 +1,27 @@
+WO-007-003 Known Limitations
+==========================
+
+1. PYODIDE ENVIRONMENT CONSTRAINT
+   - Cannot execute pytest directly in this environment
+   - Tests must be run in deployment environment
+   - Static validation performed instead
+
+2. DUPLICATE CHECKER
+   - The duplicate_checker parameter requires external implementation
+   - In tests, a mock function is used
+   - Production requires actual database check
+
+3. SOURCE TYPE REGISTRY
+   - Unknown source_types generate WARNING, not FAIL
+   - May need configuration to make this strict
+   - Current design allows flexible source registration
+
+4. TIMESTAMP HANDLING
+   - Future timestamps beyond 5 minutes are rejected
+   - Old timestamps (>1 year) generate warning only
+   - Configuration may be needed for different environments
+
+5. INTEGRATION TESTING
+   - Full integration requires deployment environment
+   - Validation framework integration with pipeline not tested
+   - End-to-end tests deferred to WO-007-004

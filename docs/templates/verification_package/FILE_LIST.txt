@@ -1,0 +1,58 @@
+# File List
+
+**Work Order:** TODO
+
+---
+
+## Backend Files
+
+```
+TODO
+```
+
+---
+
+## Test Files
+
+```
+TODO
+```
+
+---
+
+## Documentation Files
+
+```
+TODO
+```
+
+---
+
+## Configuration Files
+
+```
+TODO
+```
+
+---
+
+## Excluded (by policy)
+
+```
+__pycache__
+venv
+.idea
+.vscode
+node_modules
+tmp
+cache
+logs
+artifacts
+*.db
+*.sqlite
+*.pyc
+```
+
+---
+
+*Generated from git diff*

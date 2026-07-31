@@ -1,0 +1,26 @@
+# Directory Tree
+
+**Work Order:** TODO
+
+---
+
+```
+tactical_core/
+├── backend/
+│   └── TODO
+├── docs/
+│   └── TODO
+├── tests/
+│   └── TODO
+├── plugins/
+│   └── TODO
+├── scripts/
+│   └── TODO
+└── ...
+
+TODO - Full tree after implementation
+```
+
+---
+
+*Generated from repository structure*

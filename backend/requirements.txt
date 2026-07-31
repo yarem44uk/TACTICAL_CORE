@@ -1,0 +1,11 @@
+# Core dependencies
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Optional for type checking
+ruff>=0.1.0
+mypy>=1.5.0
+
+# Development tools
+httpx>=0.24.0

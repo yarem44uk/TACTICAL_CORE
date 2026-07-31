@@ -1,0 +1,120 @@
+# CHANGED_FILES.txt
+# CHANGE MANIFEST — NOT A GIT PATCH
+#
+# This file is a CHANGE MANIFEST documenting actual source code changes.
+# It is NOT a git-generated patch.
+# Reason: Repository does not contain .git metadata.
+#
+# Generated: 2026-07-25 15:25:18
+# Work Order: WO-007-001-REWORK
+#
+
+================================================================================
+FILES MODIFIED
+================================================================================
+
+### CF1: SQLAlchemy Metadata Collision Fix
+
+1. backend/app/intelligence/observation/model.py
+   Status: MODIFIED
+   Changes:
+   - Renamed ORM attribute: metadata -> observation_metadata
+   - Updated docstring references
+   - Updated to_dict() method: "metadata" -> "observation_metadata"
+
+   Lines affected: ~147, ~179
+
+2. backend/app/intelligence/observation/schema.py
+   Status: MODIFIED
+   Changes:
+   - Renamed Pydantic field: metadata -> observation_metadata
+   - Updated field description
+   - Updated serialization in to_dict()
+
+   Lines affected: ~56, ~58
+
+3. backend/app/intelligence/observation/validation_framework.py
+   Status: MODIFIED
+   Changes:
+   - Updated OPTIONAL_FIELDS set: "metadata" -> "observation_metadata"
+
+   Lines affected: ~126
+
+### CF2: Pydantic ValidationError Shadowing Fix
+
+4. backend/app/intelligence/observation/validator.py
+   Status: MODIFIED
+   Changes:
+   - Renamed class: ValidationError -> ObservationValidationError
+   - Updated inheritance: DuplicateObservationError(ObservationValidationError)
+   - Updated inheritance: InvalidTimestampError(ObservationValidationError)
+   - Updated inheritance: UnsupportedObservationTypeError(ObservationValidationError)
+   - Fixed except clause: except ObservationValidationError -> except pydantic.ValidationError
+
+   Lines affected: ~28, ~38, ~50, ~61, ~134
+
+5. backend/app/intelligence/observation/__init__.py
+   Status: MODIFIED
+   Changes:
+   - Updated export: ValidationError -> ObservationValidationError
+   - Updated __all__: "ValidationError" -> "ObservationValidationError"
+
+   Lines affected: ~46, ~97
+
+6. backend/app/intelligence/observation/engine.py
+   Status: MODIFIED
+   Changes:
+   - Renamed class: ValidationError -> ObservationValidationError
+
+   Lines affected: ~51
+
+================================================================================
+VERIFICATION STATUS
+================================================================================
+
+CF1: SQLAlchemy Metadata Collision
+  Status: REMEDIATED
+  Verification: STATIC PASS (Python syntax compilation verified)
+
+CF2: Pydantic ValidationError Shadowing
+  Status: REMEDIATED
+  Verification: STATIC PASS (Python syntax compilation verified)
+
+CF3: Test Evidence
+  Status: PARTIALLY REMEDIATED
+  Verification: 
+  - Static: PASS
+  - Runtime: UNAVAILABLE (Pyodide environment)
+
+CF4: Invalid GIT Patch
+  Status: REMEDIATED
+  Resolution: CHANGED_FILES.txt created as CHANGE MANIFEST
+  Reason: No .git metadata in repository
+
+MF1: Soft-Delete Semantics
+  Status: ARCHITECTURE DECISION REQUIRED
+  DO NOT MODIFY
+
+MF2: Processing Status Mutation
+  Status: ARCHITECTURE DECISION REQUIRED
+  DO NOT MODIFY
+
+================================================================================
+SCOPE PROTECTION
+================================================================================
+
+Changes verified to NOT modify:
+- Observation soft-delete semantics
+- is_deleted behavior
+- processing_status lifecycle
+- Observation immutability
+- Entity-001
+- Constitution
+- Architecture Baseline
+- Governance
+
+================================================================================
+TOTAL FILES MODIFIED: 6
+TOTAL CF1 CHANGES: 3
+TOTAL CF2 CHANGES: 3
+================================================================================

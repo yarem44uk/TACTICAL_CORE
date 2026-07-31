@@ -1,0 +1,41 @@
+# WO-007-001 File List
+
+## Files Created
+
+### Backend - Observation Engine
+
+| File Path | Description |
+|-----------|-------------|
+| backend/app/intelligence/observation/__init__.py | Module exports and public API |
+| backend/app/intelligence/observation/types.py | Enum types (ObservationType, SourceType, etc.) |
+| backend/app/intelligence/observation/schema.py | Pydantic v2 schemas |
+| backend/app/intelligence/observation/validator.py | Validation logic |
+| backend/app/intelligence/observation/model.py | SQLAlchemy ORM model |
+| backend/app/intelligence/observation/repository.py | Data access layer |
+| backend/app/intelligence/observation/events.py | Internal event bus |
+| backend/app/intelligence/observation/engine.py | Main engine |
+
+### Backend - API
+
+| File Path | Description |
+|-----------|-------------|
+| backend/app/api/intelligence/__init__.py | API module init |
+| backend/app/api/intelligence/observation.py | FastAPI endpoints |
+
+### Tests
+
+| File Path | Description |
+|-----------|-------------|
+| backend/tests/intelligence/__init__.py | Test module init |
+| backend/tests/intelligence/test_observation.py | Unit tests |
+
+## Files Modified
+
+(None - all files are new additions to the repository)
+
+## Verification
+
+All files are located within the canonical repository:
+/mnt/uploads/TACTICAL_CORE/
+
+No files were modified outside this Work Order scope.

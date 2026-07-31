@@ -1,0 +1,73 @@
+# System Architecture
+
+```mermaid
+graph TB
+    subgraph External
+        Radio[Radio Module]
+        Signal[Signal Module]
+        Camera[Camera/Media]
+        REST[REST API]
+        Plugins[Plugins]
+    end
+
+    subgraph Core["Tactical Core"]
+        Engine[Event Engine]
+        Pipeline[Pipeline]
+        Bus[Event Bus]
+        Registry[Registry]
+        History[Event History]
+    end
+
+    subgraph Stages["Pipeline Stages"]
+        V[Validation]
+        E[Enrichment]
+        P[Persistence]
+        H[History]
+        B[Broadcast]
+        D[Dispatch]
+        AI[AI]
+        PL[Plugins]
+    end
+
+    subgraph Output
+        WS[WebSocket]
+        Dashboard[Dashboard]
+        AI_Engine[AI Engine]
+        ExtPlugins[External Plugins]
+    end
+
+    Radio --> Engine
+    Signal --> Engine
+    Camera --> Engine
+    REST --> Engine
+    Plugins --> Engine
+
+    Engine --> Pipeline
+    Pipeline --> V
+    V --> E
+    E --> P
+    P --> H
+    H --> B
+    B --> D
+    D --> AI
+    AI --> PL
+
+    Engine --> Bus
+    Engine --> Registry
+    Engine --> History
+
+    B --> WS
+    WS --> Dashboard
+
+    D --> ExtPlugins
+
+    PL --> ExtPlugins
+    AI --> AI_Engine
+```
+
+## Legend
+- External modules publish events to Event Engine
+- Event Engine processes through Pipeline
+- Pipeline stages operate independently
+- Event Bus distributes to subscribers
+- All events stored in History

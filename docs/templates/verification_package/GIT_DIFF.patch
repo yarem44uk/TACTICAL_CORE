@@ -1,0 +1,26 @@
+# Git Diff Patch
+
+**Work Order:** TODO
+**Commit:** TODO
+
+---
+
+## Diff Format
+
+```diff
+TODO - Paste full git diff here
+```
+
+---
+
+## Statistics
+
+| Metric | Value |
+|--------|-------|
+| Files Changed | TODO |
+| Insertions | TODO |
+| Deletions | TODO |
+
+---
+
+*Generated from: git diff*

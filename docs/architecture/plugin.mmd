@@ -1,0 +1,82 @@
+# Plugin Architecture
+
+```mermaid
+classDiagram
+    direction TB
+
+    class IPlugin {
+        <<interface>>
+        +plugin_id: str
+        +plugin_name: str
+        +version: str
+        +register()
+        +unregister()
+        +on_startup()
+        +on_shutdown()
+    }
+
+    class IPluginManager {
+        <<interface>>
+        +register_plugin(plugin)
+        +unregister_plugin(id)
+        +get_plugin(id)
+        +list_plugins()
+        +enable_plugin(id)
+        +disable_plugin(id)
+    }
+
+    class IEventPublisher {
+        <<interface>>
+        +publish(data, correlation_id, source)
+        +publish_many(events)
+    }
+
+    class IEventSubscriber {
+        <<interface>>
+        +subscribe(handler, event_types, patterns)
+        +unsubscribe(subscription_id)
+    }
+
+    class PluginManager {
+        -plugins: Dict
+        -registry: EventRegistry
+        +register_plugin(plugin)
+        +unregister_plugin(id)
+        +get_plugin(id)
+    }
+
+    class EventEngine {
+        +publish(event_data)
+        +subscribe(subscriber_id, handler)
+    }
+
+    IPlugin <|.. RadioPlugin : implements
+    IPlugin <|.. SignalPlugin : implements
+    IPlugin <|.. CustomPlugin : implements
+
+    IPluginManager <|.. PluginManager : implements
+    IEventPublisher <|.. EventEngine : implements
+    IEventSubscriber <|.. EventEngine : implements
+
+    PluginManager --> EventEngine : uses
+    EventEngine --> IEventPublisher
+    EventEngine --> IEventSubscriber
+```
+
+## Plugin Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Discovered
+    Discovered --> Registered: register()
+    Registered --> Enabled: enable()
+    Enabled --> Running: on_startup()
+    Running --> Disabled: disable()
+    Disabled --> Removed: unregister()
+    Running --> Stopped: on_shutdown()
+    Stopped --> Removed: unregister()
+    Enabled --> Registered: disable()
+
+    Registered --> [*]: Failed
+    Enabled --> [*]: Error
+```

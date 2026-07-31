@@ -1,0 +1,29 @@
+# File Checksums
+
+**Work Order:** TODO
+**Generated:** TODO
+
+---
+
+## SHA256 Checksums
+
+Generated using: sha256sum
+
+```
+TODO - checksums will be added after implementation
+```
+
+---
+
+## Verification
+
+To verify package integrity:
+
+```bash
+cd verification_package
+sha256sum -c CHECKSUMS.txt
+```
+
+---
+
+*Checksums ensure package integrity during transfer and audit*

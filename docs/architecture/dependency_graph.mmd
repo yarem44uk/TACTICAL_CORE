@@ -1,0 +1,102 @@
+# Dependency Graph
+
+```mermaid
+graph TB
+    subgraph contracts["contracts/ (No Dependencies)"]
+        IPlugin[IPlugin]
+        IEvent[IEventPublisher/Subscriber]
+        IAudio[IAudioSource/Sink]
+        IStorage[IStorage]
+        IHealth[IHealthChecker]
+        IMetrics[IMetricsCollector]
+    end
+
+    subgraph core["core/ (Depends on contracts)"]
+        Engine[EventEngine]
+        Pipeline[Pipeline]
+        Bus[EventBus]
+        Registry[Registry]
+        History[History]
+        Hooks[Hooks]
+    end
+
+    subgraph database["database/ (Depends on core)"]
+        Session[SessionManager]
+        Repo[BaseRepository]
+    end
+
+    subgraph models["models/ (Depends on core)"]
+        Event[Event Model]
+        Incident[Incident Model]
+    end
+
+    subgraph services["services/ (Depends on database)"]
+        EventService[EventService]
+    end
+
+    subgraph api["api/ (Depends on services)"]
+        Routes[APIRoutes]
+    end
+
+    contracts --> core
+    core --> database
+    core --> models
+    database --> services
+    models --> services
+    services --> api
+
+    style contracts fill:#c8e6c9,stroke:#4caf50
+    style core fill:#e1f5fe,stroke:#2196f3
+    style database fill:#fff3e0,stroke:#ff9800
+    style api fill:#fce4ec,stroke:#e91e63
+```
+
+## Dependency Rules
+
+```mermaid
+graph LR
+    subgraph Layers
+        L1[contracts]
+        L2[core]
+        L3[database/models]
+        L4[services]
+        L5[api]
+    end
+
+    L1 --> L2
+    L2 --> L3
+    L3 --> L4
+    L4 --> L5
+
+    style L1 fill:#c8e6c9
+    style L2 fill:#e1f5fe
+    style L3 fill:#e1f5fe
+    style L4 fill:#fff3e0
+    style L5 fill:#fce4ec
+```
+
+## Forbidden Dependencies
+
+```mermaid
+graph LR
+    Forbidden[Forbidden Patterns]
+
+    F1["models → services"]
+    F2["core → api"]
+    F3["database → plugins"]
+    F4["Circular imports"]
+    F5["Global mutable state"]
+
+    Forbidden --> F1
+    Forbidden --> F2
+    Forbidden --> F3
+    Forbidden --> F4
+    Forbidden --> F5
+
+    style Forbidden fill:#ffcdd2,stroke:#f44336
+    style F1 fill:#ffcdd2
+    style F2 fill:#ffcdd2
+    style F3 fill:#ffcdd2
+    style F4 fill:#ffcdd2
+    style F5 fill:#ffcdd2
+```

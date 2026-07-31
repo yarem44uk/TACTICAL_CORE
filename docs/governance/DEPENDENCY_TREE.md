@@ -1,0 +1,163 @@
+# Dependency Tree Analysis
+
+**Generated:** 2026-07-27 11:06:58  
+**Repository:** TACTICAL_CORE  
+**Analysis Type:** Dependency Tree Analysis
+
+---
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Backend Modules | 146 |
+| App Modules | 139 |
+| Leaf Modules | 26 |
+| Core Modules | 38 |
+| Hub Modules | 75 |
+
+---
+
+## Module Categories
+
+### Leaf Modules (No internal dependencies)
+Modules at the extremities of the dependency tree.
+
+| Module |
+|--------|
+| `backend.app.api.py` |
+| `backend.app.config.ai` |
+| `backend.app.config.media` |
+| `backend.app.config.mqtt` |
+| `backend.app.config.plugins` |
+| `backend.app.config.radio` |
+| `backend.app.config.scheduler` |
+| `backend.app.config.signal` |
+| `backend.app.config.websocket` |
+| `backend.app.enums.py` |
+| `backend.app.models.py` |
+| `backend.app.plugins.discovery.py` |
+| `backend.app.plugins.hotreload.py` |
+| `backend.app.plugins.lifecycle.py` |
+| `backend.app.plugins.loader.py` |
+| `backend.app.plugins.manifest.py` |
+| `backend.app.plugins.permissions.py` |
+| `backend.app.plugins.registry.py` |
+| `backend.app.plugins.sandbox.py` |
+| `backend.app.plugins.templates.example_plugin.py` |
+| `backend.app.plugins.validator.py` |
+| `backend.app.py` |
+| `backend.app.schemas.py` |
+| `backend.app.services.py` |
+| `backend.app.utils.py` |
+| `backend.app.websocket.py` |
+
+
+### Hub Modules (4+ imports)
+Modules with complex dependencies - architectural bottlenecks.
+
+| Module |
+|--------|
+| `backend.app.config.py` |
+| `backend.app.config.settings` |
+| `backend.app.contracts.monitoring` |
+| `backend.app.contracts.py` |
+| `backend.app.core.event_bus` |
+| `backend.app.core.event_context` |
+| `backend.app.core.event_dispatcher` |
+| `backend.app.core.event_engine` |
+| `backend.app.core.event_history` |
+| `backend.app.core.event_hooks` |
+| `backend.app.core.event_registry` |
+| `backend.app.core.event_result` |
+| `backend.app.core.health.component` |
+| `backend.app.core.health.health` |
+| `backend.app.core.health.manager` |
+| `backend.app.core.metrics.collector` |
+| `backend.app.core.metrics.metrics` |
+| `backend.app.core.pipeline.base_stage` |
+| `backend.app.core.pipeline.context` |
+| `backend.app.core.pipeline.enrichment_stage` |
+| `backend.app.core.pipeline.pipeline` |
+| `backend.app.core.pipeline.py` |
+| `backend.app.core.pipeline.stage_result` |
+| `backend.app.core.py` |
+| `backend.app.database.base` |
+| `backend.app.database.database` |
+| `backend.app.database.dependencies` |
+| `backend.app.database.migration` |
+| `backend.app.database.py` |
+| `backend.app.database.repositories.base_repository` |
+| `backend.app.database.session` |
+| `backend.app.intelligence.entity.entity` |
+| `backend.app.intelligence.entity.entity_manager` |
+| `backend.app.intelligence.entity.identity` |
+| `backend.app.intelligence.entity.py` |
+| `backend.app.intelligence.entity.relations` |
+| `backend.app.intelligence.event_bus.patterns` |
+| `backend.app.intelligence.event_bus.py` |
+| `backend.app.intelligence.event_bus.routing` |
+| `backend.app.intelligence.event_bus.subscriptions` |
+| `backend.app.intelligence.knowledge.py` |
+| `backend.app.intelligence.observation.engine` |
+| `backend.app.intelligence.observation.events` |
+| `backend.app.intelligence.observation.model` |
+| `backend.app.intelligence.observation.py` |
+| `backend.app.intelligence.observation.repository` |
+| `backend.app.intelligence.observation.schema` |
+| `backend.app.intelligence.observation.validation_framework` |
+| `backend.app.intelligence.observation.validator` |
+| `backend.app.intelligence.pipeline.base_stage` |
+
+
+## Package Structure
+
+### backend/app/
+```
+backend/app/
+├── api/              - REST API endpoints
+├── config/            - Configuration management
+├── contracts/         - Interface definitions
+├── core/              - Core event processing
+│   ├── event_bus/    - Event bus implementation
+│   ├── health/        - Health checks
+│   ├── metrics/       - Metrics collection
+│   ├── middleware/    - HTTP middleware
+│   └── pipeline/     - Pipeline processing
+├── database/          - Database layer
+│   └── repositories/  - Repository pattern
+├── enums/             - Enumerations
+├── intelligence/      - AI/ML components
+│   ├── entity/        - Entity management
+│   ├── event_bus/    - Intelligence event bus
+│   ├── knowledge/     - Knowledge base
+│   ├── observation/  - Observation framework
+│   ├── pipeline/     - Intelligence pipelines
+│   └── timeline/      - Event timeline
+├── models/            - Data models
+├── plugins/           - Plugin system
+├── schemas/           - Pydantic schemas
+├── services/          - Business services
+├── utils/             - Utilities
+└── websocket/          - WebSocket handlers
+```
+
+### External Packages
+| Package | Modules |
+|--------|---------|
+| `app` | 139 |
+| `example_plugin` | 1 |
+| `generate_evidence` | 1 |
+| `health` | 1 |
+| `intelligence` | 2 |
+| `logger` | 1 |
+| `metrics` | 1 |
+| `migrations` | 1 |
+| `py` | 4 |
+| `system` | 1 |
+| `tests` | 5 |
+
+
+---
+
+*Generated by WO-REPO-006 - Static Repository Analysis*

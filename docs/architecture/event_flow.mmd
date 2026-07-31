@@ -1,0 +1,64 @@
+# Event Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant Source as Event Source
+    participant Engine as Event Engine
+    participant Pipeline as Pipeline
+    participant Stages as Pipeline Stages
+    participant Bus as Event Bus
+    participant Output as Output/Clients
+
+    Source->>Engine: Publish Event
+    Engine->>Engine: Create Context
+    Engine->>Pipeline: Execute Pipeline
+
+    Pipeline->>Stages: Validation Stage
+    Pipeline->>Stages: Enrichment Stage
+    Pipeline->>Stages: Persistence Stage
+    Pipeline->>Stages: History Stage
+    Pipeline->>Stages: Broadcast Stage
+    Pipeline->>Stages: Dispatch Stage
+    Pipeline->>Stages: AI Stage
+    Pipeline->>Stages: Plugin Stage
+
+    alt All Stages Success
+        Pipeline-->>Engine: PipelineResult(success=True)
+        Engine-->>Source: EventResult(success=True)
+    else Some Stages Failed
+        Pipeline-->>Engine: PipelineResult(success=False)
+        Engine-->>Source: EventResult(errors=[...])
+    end
+
+    Pipeline->>Bus: Notify Subscribers
+    Bus->>Output: WebSocket Broadcast
+    Bus->>Output: Push to Clients
+
+    Note over Pipeline,Output: All stages continue even if one fails
+```
+
+## Error Handling Flow
+
+```mermaid
+graph TB
+    subgraph Stage["Pipeline Stage"]
+        Execute[execute()]
+        Check[can_execute()?]
+        Do[Do Work]
+        Catch[catch Exception]
+        Fail[Add Error to Result]
+        Continue{recoverable?}
+    end
+
+    Execute --> Check
+    Check -->|Yes| Do
+    Check -->|No| Skip[Skip - add warning]
+    Skip --> Done[Return Result]
+
+    Do --> Catch
+    Catch --> Fail
+    Fail --> Continue
+    Continue -->|Yes| Done
+    Continue -->|No| Cancel[Set cancelled=True]
+    Cancel --> Done
+```

@@ -1,0 +1,135 @@
+# Database Architecture
+
+```mermaid
+erDiagram
+    EVENT {
+        uuid id PK
+        datetime event_time
+        string source
+        string source_type
+        string category
+        string subcategory
+        string priority
+        string status
+        string sender
+        string receiver
+        string title
+        text message
+        uuid incident_id FK
+        string correlation_id
+        float latitude
+        float longitude
+        string operator
+        string device
+        string audio_path
+        string video_path
+        string image_path
+        text metadata_json
+        string ai_summary
+        float ai_confidence
+        boolean is_acknowledged
+        boolean is_deleted
+        int version
+        datetime created_at
+        datetime updated_at
+    }
+
+    INCIDENT {
+        uuid id PK
+        string title
+        string status
+        string priority
+        datetime created_at
+        datetime updated_at
+    }
+
+    SOURCE {
+        uuid id PK
+        string name
+        string type
+        boolean is_active
+        datetime last_seen
+    }
+
+    ATTACHMENT {
+        uuid id PK
+        uuid event_id FK
+        string file_type
+        string file_path
+        datetime created_at
+    }
+
+    ALERT {
+        uuid id PK
+        uuid event_id FK
+        string alert_type
+        string severity
+        boolean is_acknowledged
+        datetime created_at
+    }
+
+    PLUGIN {
+        uuid id PK
+        string plugin_id
+        string name
+        string version
+        boolean is_active
+        datetime registered_at
+        datetime last_heartbeat
+    }
+
+    EVENT ||--o{ ATTACHMENT : has
+    EVENT ||--o{ ALERT : generates
+    EVENT ||--o| INCIDENT : linked_to
+    INCIDENT ||--o{ EVENT : contains
+```
+
+## Repository Pattern
+
+```mermaid
+graph LR
+    subgraph Service
+        S[EventService]
+    end
+
+    subgraph Repository
+        BR[BaseRepository]
+        ER[EventRepository]
+    end
+
+    subgraph Database
+        Session[(Session)]
+        Engine[(Engine)]
+    end
+
+    S --> ER
+    ER --> BR
+    BR --> Session
+    Session --> Engine
+
+    style BR fill:#e1f5fe
+    style ER fill:#c8e6c9
+```
+
+## Connection Management
+
+```mermaid
+graph TB
+    subgraph Engine["SQLAlchemy Engine"]
+        URL[(Database URL)]
+        Pool[Connection Pool]
+        PrePing[Pool Pre-Ping]
+    end
+
+    subgraph Session["Session Factory"]
+        Maker[SessionMaker]
+        AutoFlush[autoflush=False]
+        AutoCommit[autocommit=False]
+    end
+
+    URL --> Engine
+    Engine --> Pool
+    Pool --> PrePing
+    PrePing --> Maker
+    Maker --> Session
+```
