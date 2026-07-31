@@ -524,13 +524,6 @@ class SQLAlchemyEntityRepository(EntityRepository):
             entity.status = EntityStatus.INACTIVE
             entity.mark_updated()
             await self.save(entity)
-
-            # Also mark in database
-            self._session.execute(
-                text("UPDATE entity_store SET is_deleted = TRUE, updated_at = :now WHERE entity_id = :id"),
-                {"id": str(entity_id), "now": datetime.now().isoformat()}
-            )
-            self._session.commit()
             return True
         return False
 
