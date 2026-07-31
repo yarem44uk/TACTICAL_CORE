@@ -12,9 +12,9 @@ from uuid import uuid4
 
 from app.intelligence.entity.identity import (
     IdentityResolver,
-    ExternalIdentity,
     IdentityMapping,
 )
+from app.intelligence.entity.entity import ExternalIdentity
 from app.intelligence.entity.types import EntityType
 
 

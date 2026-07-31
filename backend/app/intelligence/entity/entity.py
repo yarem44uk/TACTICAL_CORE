@@ -222,6 +222,25 @@ class Entity:
         self.confidence = new_confidence
         self.mark_updated()
 
+    @classmethod
+    def validate_confidence(cls, confidence: float) -> float:
+        """Validate confidence is within constitutional bounds [0.0, 1.0].
+
+        Args:
+            confidence: Confidence value to validate.
+
+        Returns:
+            Validated confidence value.
+
+        Raises:
+            ValueError: If confidence is outside [0.0, 1.0].
+        """
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(
+                f"Confidence must be between 0.0 and 1.0, got {confidence}"
+            )
+        return confidence
+
     def mark_updated(self) -> None:
         """Mark entity as updated."""
         self.updated_at = datetime.now(timezone.utc)
@@ -393,6 +412,9 @@ class Entity:
 
         entity_id = uuid4()
         status = EntityStatus.UNKNOWN  # Fresh entities start at UNKNOWN
+
+        # CV4: Validate confidence in factory method
+        confidence = cls.validate_confidence(confidence)
 
         return cls(
             id=entity_id,
