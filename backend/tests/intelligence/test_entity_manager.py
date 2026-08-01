@@ -128,6 +128,16 @@ class MockEntityRepository(EntityRepository):
                     break
         return results[:limit]
 
+    async def resolve_by_identity(self, source: str, external_id: str) -> Optional[UUID]:
+        """Resolve entity UUID by (source, external_id).
+
+        Required by EntityRepository contract (WO-008-017/018).
+        """
+        for entity in self._entities.values():
+            if entity.external_ids.get(source) == external_id:
+                return entity.id
+        return None
+
 
 
 
@@ -144,9 +154,9 @@ class TestEntityManagerCreation:
         manager = EntityManager(repository=repository)
 
         assert manager is not None
-        assert manager.repository is repository
-        assert manager.identity_resolver is not None
-        assert manager.relations is not None
+        # EntityManager uses private _repository and _relations internally
+        assert manager._repository is repository
+        assert manager._relations is not None
 
 
 class TestEntityManagerCreate:
@@ -361,15 +371,18 @@ class TestEntityManagerRelations:
         entity1, _ = await manager.create(entity_type=EntityType.UNIT)
         entity2, _ = await manager.create(entity_type=EntityType.VEHICLE)
 
-        relation = await manager.relate(
+        result = await manager.relate(
             source_id=entity1.id,
             target_id=entity2.id,
             relation_type=EntityRelationType.PARENT,
         )
 
-        assert relation is not None
-        assert relation.source_id == entity1.id
-        assert relation.target_id == entity2.id
+        # manager.relate() returns bool (success flag), not a Relation object
+        assert result is True
+
+        # Verify relation exists via get_related
+        related = await manager.get_related(entity1.id)
+        assert entity2 in related
 
     @pytest.mark.asyncio
     async def test_get_related_entities(self):
@@ -391,42 +404,61 @@ class TestEntityManagerIdentity:
     """Tests for EntityManager identity resolution."""
 
     @pytest.mark.asyncio
-    async def test_register_external_id(self):
-        """Test registering an external ID for an entity."""
+    async def test_resolve_or_create_registers_identity(self):
+        """Test that resolve_or_create() registers external identity.
+
+        Production API: EntityManager.resolve_or_create() handles identity
+        registration internally. No separate register_external_id() method exists.
+        """
         repository = MockEntityRepository()
         manager = EntityManager(repository=repository)
 
-        entity, _ = await manager.create(entity_type=EntityType.CONTACT)
+        # First call registers identity
+        entity1, created1 = await manager.resolve_or_create(
+            entity_type=EntityType.CONTACT,
+            source="signal",
+            external_id="SIG-001",
+        )
+        assert created1 is True
 
-        await manager.register_external_id(
-            entity_id=entity.id,
+        # Second call resolves existing identity
+        entity2, created2 = await manager.resolve_or_create(
+            entity_type=EntityType.CONTACT,
+            source="signal",
+            external_id="SIG-001",
+        )
+        assert created2 is False
+        assert entity1.id == entity2.id
+
+    @pytest.mark.asyncio
+    async def test_resolve_by_external_id_via_repository(self):
+        """Test resolving entity by external ID through repository.
+
+        Production API: Identity resolution is handled by repository.resolve_by_identity().
+        EntityManager.resolve_or_create() uses this internally.
+        """
+        repository = MockEntityRepository()
+        manager = EntityManager(repository=repository)
+
+        # Create entity with identity
+        entity, _ = await manager.resolve_or_create(
+            entity_type=EntityType.CONTACT,
             source="tak",
             external_id="TAK-12345",
         )
 
-        # Verify mapping exists
-        mapping = manager.identity_resolver.get_mapping(entity.id)
-        assert mapping is not None
-
-    @pytest.mark.asyncio
-    async def test_resolve_identity(self):
-        """Test resolving entity by external ID."""
-        repository = MockEntityRepository()
-        manager = EntityManager(repository=repository)
-
-        entity, _ = await manager.create(entity_type=EntityType.CONTACT)
-        await manager.register_external_id(
-            entity_id=entity.id,
-            source="signal",
-            external_id="SIG-001",
-        )
-
-        resolved_id = await manager.resolve_identity(
-            source="signal",
-            external_id="SIG-001",
-        )
-
+        # Verify identity is registered in repository
+        resolved_id = await repository.resolve_by_identity("tak", "TAK-12345")
         assert resolved_id == entity.id
+
+        # Verify resolve_or_create returns existing entity
+        entity2, created = await manager.resolve_or_create(
+            entity_type=EntityType.CONTACT,
+            source="tak",
+            external_id="TAK-12345",
+        )
+        assert created is False
+        assert entity2.id == entity.id
 
 
 class TestEntityManagerSearch:
@@ -454,33 +486,28 @@ class TestEntityManagerStats:
     async def test_get_stats(self):
         """Test getting entity statistics.
 
-        Production API returns:
+        Production API returns relations stats from EntityManager.get_stats():
             {
-                "identity": {...},
-                "relations": {...}
+                "total_relations": int,
+                "entities_with_relations": int,
+                "by_type": { ... }
             }
         """
         repository = MockEntityRepository()
         manager = EntityManager(repository=repository)
 
-        # Create entities
-        _, _ = await manager.create(entity_type=EntityType.UNIT)
-        _, _ = await manager.create(entity_type=EntityType.CONTACT)
+        # Create entities and relate them
+        e1, _ = await manager.create(entity_type=EntityType.UNIT)
+        e2, _ = await manager.create(entity_type=EntityType.CONTACT)
+        await manager.relate(e1.id, e2.id, EntityRelationType.PEER)
 
         stats = manager.get_stats()
 
-        # Verify production API structure
-        assert "identity" in stats, "Stats must contain 'identity' key"
-        assert "relations" in stats, "Stats must contain 'relations' key"
-
-        # Verify identity stats structure
-        identity_stats = stats["identity"]
-        # Note: nested keys vary by implementation, only check stable top-level keys
-        assert "total_entities" in identity_stats or "total_external_ids" in identity_stats
-
-        # Verify relations stats structure  
-        relations_stats = stats["relations"]
-        assert "total_relations" in relations_stats
+        # Verify production API structure (relations stats only)
+        assert "total_relations" in stats
+        assert "entities_with_relations" in stats
+        assert "by_type" in stats
+        assert stats["total_relations"] == 1
 
 
 if __name__ == "__main__":

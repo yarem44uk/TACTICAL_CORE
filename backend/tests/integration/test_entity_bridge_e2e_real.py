@@ -313,10 +313,11 @@ class TestEntityE2E:
         external_id = "RADIO-CV1-001"
 
         # Verify identity resolver tracks correctly
-        resolver = entity_manager._identity_resolver
-
-        # Before: no identity
-        assert resolver.resolve(source, external_id) is None
+        # Identity is stored in the repository, not in a separate resolver on the manager
+        # EntityManager delegates to repository.resolve_by_identity()
+        # Check via repository that identity was registered
+        resolved_id = await entity_manager._repository.resolve_by_identity(source, external_id)
+        assert resolved_id is None, "Identity should not be registered before create"
 
         # Create
         entity, created = await entity_manager.resolve_or_create(
@@ -326,8 +327,9 @@ class TestEntityE2E:
         )
         assert created is True
 
-        # After: identity exists
-        assert resolver.resolve(source, external_id) == entity.id
+        # After: identity exists in repository
+        resolved_id = await entity_manager._repository.resolve_by_identity(source, external_id)
+        assert resolved_id == entity.id
 
         # Second call resolves existing
         entity2, created2 = await entity_manager.resolve_or_create(

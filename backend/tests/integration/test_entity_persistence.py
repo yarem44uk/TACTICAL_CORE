@@ -11,8 +11,8 @@ BASELINE: WO-008-008 APPROVED
 """
 
 import pytest
-from typing import Dict, List
-from uuid import UUID
+from typing import Dict, List, Optional
+from uuid import UUID, uuid4
 
 from app.intelligence.entity import (
     Entity,
@@ -108,6 +108,16 @@ class MockEntityRepository(EntityRepository):
                 if len(results) >= limit:
                     break
         return results[:limit]
+
+    async def resolve_by_identity(self, source: str, external_id: str) -> Optional[UUID]:
+        """Resolve entity UUID by (source, external_id).
+
+        Required by EntityRepository contract (WO-008-017/018).
+        """
+        for entity in self._entities.values():
+            if entity.external_ids.get(source) == external_id:
+                return entity.id
+        return None
 
 
 class TestEntityCreation:
@@ -334,7 +344,12 @@ class TestStats:
 
     @pytest.mark.asyncio
     async def test_get_stats_returns_structure(self):
-        """Test get_stats() returns expected structure."""
+        """Test get_stats() returns expected structure.
+
+        Production API: EntityManager.get_stats() delegates to
+        self._relations.get_stats() which returns relations stats:
+        {total_relations, entities_with_relations, by_type}
+        """
         repo = MockEntityRepository()
         manager = EntityManager(repository=repo)
 
@@ -342,8 +357,9 @@ class TestStats:
         await manager.create(entity_type=EntityType.CONTACT, source="contact-1")
 
         stats = manager.get_stats()
-        assert "identity" in stats
-        assert "relations" in stats
+        assert "total_relations" in stats
+        assert "entities_with_relations" in stats
+        assert "by_type" in stats
 
 
 if __name__ == "__main__":
