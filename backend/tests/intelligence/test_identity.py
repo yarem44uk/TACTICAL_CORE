@@ -12,9 +12,9 @@ from uuid import uuid4
 
 from app.intelligence.entity.identity import (
     IdentityResolver,
-    ExternalIdentity,
     IdentityMapping,
 )
+from app.intelligence.entity.entity import ExternalIdentity
 from app.intelligence.entity.types import EntityType
 
 
@@ -45,8 +45,8 @@ class TestExternalIdentity:
         identity = ExternalIdentity(
             external_id="SIG-001",
             source="signal",
-            is_verified=True,
         )
+        identity.mark_verified()
 
         assert identity.is_verified is True
         assert identity.verified_at is not None

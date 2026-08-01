@@ -11,7 +11,7 @@ BASELINE: WO-008-008 APPROVED
 """
 
 import pytest
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from app.intelligence.entity import (
@@ -88,6 +88,15 @@ class MockEntityRepository(EntityRepository):
 
     async def find_by_tag(self, tag: str) -> List[Entity]:
         return [e for e in self._entities.values() if e.data and tag in e.data.tags]
+
+    async def resolve_by_identity(self, source: str, external_id: str) -> Optional[UUID]:
+        """Resolve entity by external identity."""
+        for entity in self._entities.values():
+            if entity.external_ids:
+                for src, ids in entity.external_ids.items():
+                    if src == source and external_id in ids:
+                        return entity.id
+        return None
 
     async def find_by_callsign(self, callsign: str) -> Entity:
         for e in self._entities.values():
@@ -342,8 +351,8 @@ class TestStats:
         await manager.create(entity_type=EntityType.CONTACT, source="contact-1")
 
         stats = manager.get_stats()
-        assert "identity" in stats
-        assert "relations" in stats
+        assert "total_relations" in stats
+        assert "by_type" in stats
 
 
 if __name__ == "__main__":

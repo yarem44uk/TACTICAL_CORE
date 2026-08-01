@@ -71,6 +71,15 @@ class MockEntityRepository:
     async def supersede(self, old_id, new_id):
         return None
 
+    async def resolve_by_identity(self, source: str, external_id: str):
+        from uuid import UUID
+        for entity in self._entities.values():
+            if entity.external_ids:
+                for src, ids in entity.external_ids.items():
+                    if src == source and external_id in ids:
+                        return entity.id
+        return None
+
     async def find_by_type(self, entity_type):
         return [e for e in self._entities.values() if e.entity_type == entity_type]
 
@@ -119,7 +128,7 @@ class TestEventBusToEntityManual:
         def event_handler(event: Any, context: Dict[str, Any]) -> None:
             captured.append(event)
 
-        bus.subscribe("entity-processor", ["signal.message"], event_handler)
+        bus.subscribe("entity-processor", event_handler, ["signal.message"])
 
         # Publish event
         signal_event = {
@@ -173,7 +182,7 @@ class TestEventBusToEntityManual:
         def handler(event: Any, context: Dict[str, Any]) -> None:
             captured.append(event)
 
-        bus.subscribe("handler", ["telegram.message"], handler)
+        bus.subscribe("handler", handler, ["telegram.message"])
 
         # First message
         msg1 = {
@@ -298,7 +307,7 @@ class TestConnectorCoverage:
         def handler(event: Any, context: Dict[str, Any]) -> None:
             received.append(event)
 
-        bus.subscribe("signal-handler", ["signal.message"], handler)
+        bus.subscribe("signal-handler", handler, ["signal.message"])
 
         # Signal event
         signal_evt = {
@@ -336,7 +345,7 @@ class TestConnectorCoverage:
         def handler(event: Any, context: Dict[str, Any]) -> None:
             received.append(event)
 
-        bus.subscribe("radio-handler", ["radio.transmission"], handler)
+        bus.subscribe("radio-handler", handler, ["radio.transmission"])
 
         # Radio event
         radio_evt = {
@@ -372,7 +381,7 @@ class TestConnectorCoverage:
         def handler(event: Any, context: Dict[str, Any]) -> None:
             received.append(event)
 
-        bus.subscribe("mqtt-handler", ["mqtt.message"], handler)
+        bus.subscribe("mqtt-handler", handler, ["mqtt.message"])
 
         mqtt_evt = {
             "event_type": "mqtt.message",
