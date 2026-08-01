@@ -122,6 +122,10 @@ class PipelineContext:
             stage_timings=timings,
         )
     
+    def with_timing(self, stage_name: str, duration_ms: float) -> 'PipelineContext':
+        """Record stage execution time (alias for add_timing)."""
+        return self.add_timing(stage_name, duration_ms)
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
