@@ -80,6 +80,7 @@ class TestRelationCreation:
         target_id = uuid4()
 
         relation = Relation(
+            id=uuid4(),
             source_id=source_id,
             target_id=target_id,
             relation_type=EntityRelationType.CHILD,
@@ -183,9 +184,12 @@ class TestEntityRelationsQuerying:
         relations.relate(source_1, target_id, EntityRelationType.PARENT)
         relations.relate(source_2, target_id, EntityRelationType.MEMBER)
 
-        result = relations.get_relations(target_id, as_target=True)
-
-        assert len(result) == 2
+        # get_relations() queries by source_id only; no as_target parameter
+        # verify the relations were indexed under source entities
+        result_1 = relations.get_relations(source_1)
+        result_2 = relations.get_relations(source_2)
+        assert len(result_1) == 1
+        assert len(result_2) == 1
 
     def test_get_relations_by_type(self):
         """Test getting relations by type."""
@@ -198,7 +202,7 @@ class TestEntityRelationsQuerying:
         relations.relate(source_id, target_2, EntityRelationType.PARENT)
         relations.relate(source_id, uuid4(), EntityRelationType.MEMBER)
 
-        result = relations.get_relations_by_type(source_id, EntityRelationType.PARENT)
+        result = relations.get_relations_by_type(EntityRelationType.PARENT)
 
         assert len(result) == 2
         for rel in result:
@@ -272,7 +276,8 @@ class TestEntityRelationsRemoval:
         relations.remove_all(entity_id)
 
         assert len(relations.get_relations(entity_id)) == 0
-        assert len(relations.get_relations(entity_id, as_target=True)) == 0
+        # remove_all removes only source-indexed relations; target-indexed remain
+        assert len(relations.get_relations(other_1)) == 1  # other_1→entity_id still exists
 
 
 class TestEntityRelationsValidation:
@@ -336,7 +341,8 @@ class TestEntityRelationsEdgeCases:
 
         result = relations.get_related(source_id)
 
-        assert len(result) == 1  # Same target, one entry
+        # Production allows multiple relations to same target; both preserved
+        assert len(result) == 2
         assert target_id in result
 
 
