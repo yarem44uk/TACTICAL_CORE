@@ -111,7 +111,7 @@ class TestEventBusBasics:
         def handler(event: Any, context: Dict[str, Any]) -> None:
             received.append(event)
 
-        bus.subscribe(subscriber_id="wildcard", event_types=["*"], handler=handler)
+        bus.subscribe(subscriber_id="wildcard", patterns=["*"], handler=handler)
 
         bus.publish("radio.transmission", {"freq": "155.5"}, {})
         bus.publish("signal.message", {"text": "hello"}, {})
