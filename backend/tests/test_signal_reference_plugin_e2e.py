@@ -5,13 +5,20 @@ Author: Tactical Core Engineering Team
 Version: 1.0
 """
 
-from types import SimpleNamespace
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 import logging
-import threading
 import time
+
+class EventRecord:
+    """Test double mirroring production event_data schema exactly."""
+    def __init__(self, **kwargs):
+        # Accept all fields from event_data, including those added by pipeline stages
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -35,7 +42,7 @@ class InMemoryEventRepository:
         event_id = kwargs.get("id")
         if isinstance(event_id, str):
             kwargs["id"] = uuid.UUID(event_id)
-        event = SimpleNamespace(**kwargs)
+        event = EventRecord(**kwargs)
         self._events[str(event.id)] = event
         return event
 
