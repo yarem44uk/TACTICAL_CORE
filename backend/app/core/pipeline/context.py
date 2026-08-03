@@ -121,6 +121,14 @@ class PipelineContext:
             stage_warnings=dict(self.stage_warnings),
             stage_timings=timings,
         )
+
+    def with_timing(self, stage_name: str, duration_ms: float) -> 'PipelineContext':
+        """Record stage execution time (immutable transformation).
+
+        Equivalent to add_timing() but follows the with_* naming convention
+        used by pipeline execution flow.
+        """
+        return self.add_timing(stage_name, duration_ms)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
