@@ -79,17 +79,18 @@ class TestSignalReferencePluginE2E:
         self.plugin.set_event_bus(self.event_bus)
         self.plugin.set_event_engine(self.event_engine)
         self.plugin.set_repository(self.repository)
-        
+    
         self.event_engine.startup()
-        
+        self.plugin_manager.register_plugin(self.plugin)
+        self.plugin.on_startup()
+    
         yield
-        
+    
         self.plugin.on_shutdown()
         self.event_engine.shutdown()
     
     def test_01_plugin_registration(self):
         """Test 1: Plugin Registration."""
-        self.plugin_manager.register_plugin(self.plugin)
         assert "test-signal-reference" in self.plugin_manager
         assert len(self.plugin_manager) == 1
         health = self.plugin_manager.get_plugin_health("test-signal-reference")
@@ -99,7 +100,6 @@ class TestSignalReferencePluginE2E:
     
     def test_02_event_subscription(self):
         """Test 2: Event Subscription."""
-        self.plugin.on_startup()
         subscriber_count = self.event_bus.get_subscription_count("reference.test")
         assert subscriber_count >= 1
         assert self.plugin._running is True
@@ -144,8 +144,6 @@ class TestSignalReferencePluginE2E:
     
     def test_07_graceful_shutdown(self):
         """Test 7: Graceful Shutdown."""
-        self.plugin_manager.register_plugin(self.plugin)
-        self.plugin.on_startup()
         assert self.plugin._running is True
         self.plugin.on_shutdown()
         assert self.plugin._running is False
@@ -156,7 +154,7 @@ class TestSignalReferencePluginE2E:
     def test_08_no_orphan_threads(self):
         """Test 8: No Orphan Threads."""
         threads_before = threading.active_count()
-        self.plugin_manager.register_plugin(self.plugin)
+        self.plugin.on_shutdown()
         self.plugin.on_startup()
         self.plugin.on_shutdown()
         threads_after = threading.active_count()
