@@ -5,6 +5,7 @@ Author: Tactical Core Engineering Team
 Version: 1.0
 """
 
+from types import SimpleNamespace
 import logging
 import threading
 import time
@@ -26,25 +27,24 @@ logger = logging.getLogger(__name__)
 
 class InMemoryEventRepository:
     """In-memory event repository for testing."""
-    
+
     def __init__(self):
         self._events = {}
-    
+
     def create(self, **kwargs):
         event_id = kwargs.get("id")
         if isinstance(event_id, str):
             kwargs["id"] = uuid.UUID(event_id)
-        from app.models.event import Event
-        event = Event(**kwargs)
+        event = SimpleNamespace(**kwargs)
         self._events[str(event.id)] = event
         return event
-    
+
     def get(self, id, raise_not_found=False):
         event = self._events.get(str(id))
         if event is None and raise_not_found:
             raise ValueError(f"Event not found: {id}")
         return event
-    
+
     def count(self):
         return len(self._events)
 
