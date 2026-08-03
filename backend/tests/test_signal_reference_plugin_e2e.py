@@ -54,7 +54,7 @@ class TestSignalReferencePluginE2E:
     
     @pytest.fixture(autouse=True)
     def setup(self):
-        """Set up test fixtures."""
+        """Set up test fixtures — prepares objects only, does not activate."""
         self.repository = InMemoryEventRepository()
         self.event_registry = EventRegistry()
         self.event_bus = EventBus()
@@ -84,7 +84,10 @@ class TestSignalReferencePluginE2E:
         
         yield
         
-        self.plugin.on_shutdown()
+        # Teardown: ensure clean state
+        if self.plugin._running:
+            self.plugin.on_shutdown()
+        self.plugin_manager.unregister_plugin("test-signal-reference")
         self.event_engine.shutdown()
     
     def test_01_plugin_registration(self):
@@ -107,6 +110,7 @@ class TestSignalReferencePluginE2E:
     
     def test_03_event_publication(self):
         """Test 3: Event Publication through Pipeline."""
+        self.plugin.on_startup()
         event_id = self.plugin.publish_test_event()
         assert event_id is not None
         published = self.plugin._published_events
@@ -125,6 +129,7 @@ class TestSignalReferencePluginE2E:
     
     def test_05_database_persistence(self):
         """Test 5: Database Persistence."""
+        self.plugin.on_startup()
         event_id = self.plugin.publish_test_event()
         assert event_id is not None
         count = self.repository.count()
@@ -135,6 +140,7 @@ class TestSignalReferencePluginE2E:
     
     def test_06_plugin_unregistration(self):
         """Test 6: Plugin Unregistration."""
+        self.plugin_manager.register_plugin(self.plugin)
         count_before = len(self.plugin_manager)
         result = self.plugin_manager.unregister_plugin("test-signal-reference")
         assert result is True

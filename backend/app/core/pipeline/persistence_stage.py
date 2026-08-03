@@ -38,17 +38,19 @@ class PersistenceStage(BaseStage):
 
     def _execute(self, context: PipelineContext) -> Optional[Dict[str, Any]]:
         """Persist event to database."""
-        if self._repository is None or self._session is None:
-            context.stage_warnings["persistence"] = [{"message": "No database configured"}]
+        if self._repository is None:
+            context.stage_warnings["persistence"] = [{"message": "No repository configured"}]
             return None
 
         try:
             event = self._repository.create(**context.event_data)
-            self._session.commit()
+            if self._session is not None:
+                self._session.commit()
             context.metadata["persisted_id"] = str(context.event_id)
             context.metadata["database_saved"] = True
             return context.event_data
         except Exception as e:
             context.stage_errors["persistence"] = [{"code": "PERSISTENCE_ERROR", "message": str(e)}]
-            self._session.rollback()
+            if self._session is not None:
+                self._session.rollback()
             return None
