@@ -33,19 +33,33 @@ from app.database.database import (
     shutdown_database,
 )
 
-from app.database.dependencies import (
-    get_db,
-    get_db_session_manager,
-    get_db_manager,
-    get_db_context,
-)
 
-from app.database.migration import (
-    MigrationManager,
-    init_alembic,
-    run_migrations,
-    ensure_database_schema,
-)
+def __getattr__(name):
+    """Lazy import of optional dependencies (FastAPI, Alembic).
+
+    Avoids importing fastapi or alembic at package initialization time.
+    Dependencies are only loaded when explicitly accessed.
+    """
+    if name in ("get_db", "get_db_session_manager", "get_db_manager", "get_db_context"):
+        from app.database.dependencies import (
+            get_db,
+            get_db_session_manager,
+            get_db_manager,
+            get_db_context,
+        )
+        return {"get_db": get_db, "get_db_session_manager": get_db_session_manager,
+                "get_db_manager": get_db_manager, "get_db_context": get_db_context}[name]
+    if name in ("MigrationManager", "init_alembic", "run_migrations", "ensure_database_schema"):
+        from app.database.migration import (
+            MigrationManager,
+            init_alembic,
+            run_migrations,
+            ensure_database_schema,
+        )
+        return {"MigrationManager": MigrationManager, "init_alembic": init_alembic,
+                "run_migrations": run_migrations, "ensure_database_schema": ensure_database_schema}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Base
@@ -66,12 +80,12 @@ __all__ = [
     "get_database_manager",
     "initialize_database",
     "shutdown_database",
-    # Dependencies
+    # Dependencies (lazy loaded — requires fastapi)
     "get_db",
     "get_db_session_manager",
     "get_db_manager",
     "get_db_context",
-    # Migration
+    # Migration (lazy loaded — requires alembic)
     "MigrationManager",
     "init_alembic",
     "run_migrations",
