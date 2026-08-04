@@ -65,10 +65,9 @@ class TestInMemoryEventRepository:
         assert result is True
         # Count should exclude deleted
         assert repo.count() == 0
-        # Event should still exist in storage
+        # get() returns None for soft-deleted events (SQLAlchemy parity)
         event = repo.get(event_id)
-        assert event is not None
-        assert event["is_deleted"] is True
+        assert event is None
 
     def test_update_status(self):
         repo = InMemoryEventRepository()
@@ -108,10 +107,11 @@ class TestSQLAlchemyEventRepository:
         return session
 
     def test_create_event(self, mock_session):
-        with patch("app.repositories.event_repository.Event") as MockEvent:
-            event_obj = MagicMock()
-            event_obj.id = uuid.uuid4()
-            MockEvent.from_dict.return_value = event_obj
+        mock_event_module = MagicMock()
+        event_obj = MagicMock()
+        event_obj.id = uuid.uuid4()
+        mock_event_module.Event.from_dict.return_value = event_obj
+        with patch.dict('sys.modules', {'app.models.event': mock_event_module}):
             repo = SQLAlchemyEventRepository(mock_session)
             event_id = repo.create({"id": str(uuid.uuid4()), "event_type": "t1", "source": "s1"})
             assert event_id is not None
@@ -119,11 +119,13 @@ class TestSQLAlchemyEventRepository:
             mock_session.commit.assert_called_once()
 
     def test_update_status(self, mock_session):
-        with patch("app.repositories.event_repository.Event") as MockEvent:
-            event_obj = MagicMock()
-            mock_session.query.return_value.filter.return_value.first.return_value = event_obj
+        mock_event_module = MagicMock()
+        event_obj = MagicMock()
+        event_obj.id = uuid.uuid4()
+        mock_session.query.return_value.filter.return_value.first.return_value = event_obj
+        with patch.dict('sys.modules', {'app.models.event': mock_event_module}):
             repo = SQLAlchemyEventRepository(mock_session)
-            result = repo.update_status("some-id", "processed")
+            result = repo.update_status(str(event_obj.id), "processed")
             assert result is True
             event_obj.increment_version.assert_called_once()
             mock_session.commit.assert_called_once()

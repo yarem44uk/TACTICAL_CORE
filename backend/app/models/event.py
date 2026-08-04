@@ -23,6 +23,7 @@ from sqlalchemy import (
     Boolean,
     Integer,
     Index,
+    JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -87,7 +88,7 @@ class Event(BaseModel):
     """Detailed event description."""
 
     payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(
-        Text,
+        JSON,
         nullable=True,
     )
     """JSON payload with raw/normalized event data."""

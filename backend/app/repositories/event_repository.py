@@ -143,7 +143,10 @@ class InMemoryEventRepository(EventRepository):
         return event_id
 
     def get(self, event_id: str) -> Optional[Dict[str, Any]]:
-        return self._store.get(event_id)
+        event = self._store.get(event_id)
+        if event is None or event.get("is_deleted"):
+            return None
+        return event
 
     def find_by_status(self, status: str) -> List[Dict[str, Any]]:
         return [
