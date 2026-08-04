@@ -47,6 +47,9 @@ from app.database.migration import (
     ensure_database_schema,
 )
 
+from app.database.transaction import TransactionManager
+from app.database.repository_factory import RepositoryFactory
+
 __all__ = [
     # Base
     "Base",
@@ -76,4 +79,8 @@ __all__ = [
     "init_alembic",
     "run_migrations",
     "ensure_database_schema",
+    # Transaction
+    "TransactionManager",
+    # Factory
+    "RepositoryFactory",
 ]
