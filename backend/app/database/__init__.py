@@ -48,7 +48,8 @@ from app.database.migration import (
 )
 
 from app.database.transaction import TransactionManager
-from app.database.repository_factory import RepositoryFactory
+from app.database.repository_factory import RepositoryFactory, RepositoryType
+from app.database.event_service import EventPersistenceService
 
 __all__ = [
     # Base
@@ -83,4 +84,7 @@ __all__ = [
     "TransactionManager",
     # Factory
     "RepositoryFactory",
+    "RepositoryType",
+    # Service
+    "EventPersistenceService",
 ]
