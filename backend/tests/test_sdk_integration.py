@@ -80,7 +80,7 @@ class TestSDKIntegration:
         from app.plugins.sdk import PluginHealth, HealthStatus
         h = PluginHealth(plugin_id="check")
         h.add_check("always_ok", lambda: (True, "ok"))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.overall_status == HealthStatus.HEALTHY
         assert len(report.checks) == 1
 

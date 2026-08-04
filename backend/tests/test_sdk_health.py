@@ -44,7 +44,7 @@ class TestPluginHealth:
     def test_add_check(self) -> None:
         h = self._make()
         h.add_check("ping", lambda: (True, "ok"))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert len(report.checks) == 1
         assert report.checks[0].name == "ping"
 
@@ -52,39 +52,38 @@ class TestPluginHealth:
         h = self._make()
         h.add_check("db", lambda: (True, "connected"))
         h.add_check("cache", lambda: (True, "warm"))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.overall_status == HealthStatus.HEALTHY
 
     def test_run_checks_unhealthy(self) -> None:
         h = self._make()
         h.add_check("db", lambda: (False, "timeout"))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.overall_status == HealthStatus.UNHEALTHY
 
     def test_run_checks_degraded(self) -> None:
         h = self._make()
         h.add_check("db", lambda: (True, "ok"))
         h.add_check("cache", lambda: (False, "miss"))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.overall_status == HealthStatus.DEGRADED
 
     def test_run_checks_failure_increments_counter(self) -> None:
         h = self._make()
         h.add_check("db", lambda: (False, "fail"))
-        asyncio.get_event_loop().run_until_complete(h.run_checks())
+        asyncio.run(h.run_checks())
         assert h.consecutive_failures == 1
-        asyncio.get_event_loop().run_until_complete(h.run_checks())
+        asyncio.run(h.run_checks())
         assert h.consecutive_failures == 2
 
     def test_run_checks_success_resets_counter(self) -> None:
         h = self._make()
         h.add_check("db", lambda: (False, "fail"))
-        asyncio.get_event_loop().run_until_complete(h.run_checks())
+        asyncio.run(h.run_checks())
         assert h.consecutive_failures == 1
-        # Replace with healthy check
         h._checks.clear()
         h.add_check("db", lambda: (True, "ok"))
-        asyncio.get_event_loop().run_until_complete(h.run_checks())
+        asyncio.run(h.run_checks())
         assert h.consecutive_failures == 0
 
     def test_get_report_without_checks(self) -> None:
@@ -97,7 +96,7 @@ class TestPluginHealth:
     def test_run_checks_exception_handled(self) -> None:
         h = self._make()
         h.add_check("bad", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.checks[0].status == HealthStatus.UNHEALTHY
         assert "Check failed" in report.checks[0].message
 
@@ -106,7 +105,7 @@ class TestPluginHealth:
             return (True, "async ok")
         h = self._make()
         h.add_check("async", async_check)
-        report = asyncio.get_event_loop().run_until_complete(h.run_checks())
+        report = asyncio.run(h.run_checks())
         assert report.checks[0].status == HealthStatus.HEALTHY
 
     def test_to_dict(self) -> None:
