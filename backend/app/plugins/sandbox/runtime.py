@@ -25,6 +25,7 @@ class PluginExecutionContext:
     # Execution state
     task: object | None = None  # asyncio.Task or threading.Thread
     thread: object | None = None
+    last_heartbeat: datetime | None = None
 
     def mark_cancelled(self) -> None:
         self.cancelled = True

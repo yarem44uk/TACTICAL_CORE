@@ -17,6 +17,7 @@ class SandboxPolicy:
     shutdown_timeout: float = 5.0
     heartbeat_interval: float = 30.0
     heartbeat_timeout: float = 60.0
+    execution_timeout: float = 120.0
 
     # --- Import restrictions ---
     forbidden_imports: list[str] = field(default_factory=lambda: [

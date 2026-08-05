@@ -74,6 +74,7 @@ class PluginManager(IPluginManager):
         self._registry: PluginRegistry = PluginRegistry()
         self._event_bus: Optional[Any] = None
         self._event_engine: Optional[Any] = None
+        self._executors: Dict[str, PluginExecutor] = {}
 
         logger.info("PluginManager initialized")
 
@@ -376,15 +377,24 @@ class PluginManager(IPluginManager):
         with self._lock:
             for entry in self._registry.list():
                 executor = PluginExecutor(entry.plugin_id, SandboxPolicy())
+                if not executor.start(entry.instance.run):
+                    self._registry.update_status(entry.plugin_id, FAILED)
+                    logger.error(f"Failed to start plugin {entry.plugin_id}")
+                    continue
+                self._executors[entry.plugin_id] = executor
                 self._registry.update_status(entry.plugin_id, RUNNING)
                 logger.info(f"Plugin {entry.plugin_id} started via executor")
 
     def shutdown_all(self) -> None:
         """Stop all running plugins using PluginExecutor."""
         with self._lock:
-            for entry in self._registry.list():
-                self._registry.update_status(entry.plugin_id, STOPPED)
-                logger.info(f"Plugin {entry.plugin_id} stopped via executor")
+            for plugin_id, executor in list(self._executors.items()):
+                executor.stop()
+                entry = self._registry.find(plugin_id)
+                if entry and entry.status == RUNNING:
+                    self._registry.update_status(plugin_id, STOPPED)
+                    logger.info(f"Plugin {plugin_id} stopped via executor")
+            self._executors.clear()
 
     # ------------------------------------------------------------------
     # Health reporting

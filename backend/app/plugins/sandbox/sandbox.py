@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import traceback
 from typing import Any, Callable
@@ -63,6 +64,9 @@ class PluginSandbox:
         """
         self._context = context
         self._stop_event.clear()
+        # Capture the set of loaded modules BEFORE plugin starts executing.
+        # Used by _check_policy to detect newly imported forbidden modules.
+        self._modules_before = set(sys.modules.keys())
 
         self._thread = threading.Thread(
             target=self._run_with_isolation,
@@ -90,10 +94,35 @@ class PluginSandbox:
     # ------------------------------------------------------------------
 
     def _check_policy(self, context: PluginExecutionContext) -> bool:
-        """Check if plugin execution is allowed by policy."""
-        # In Phase 1, we check that the plugin module does not import
-        # forbidden modules. Full AST-based checking is done in Validator.
-        # Here we only enforce runtime policy constraints.
+        """Enforce SandboxPolicy runtime constraints.
+
+        Returns:
+            True if allowed, False if violation detected.
+        """
+        # --- Forbidden imports enforcement ---
+        # Only check modules that are newly loaded during plugin execution.
+        # SecurityValidator already checks source code at load time (AST).
+        # Here we catch runtime imports that bypass the validator.
+        new_modules = set(sys.modules.keys()) - self._modules_before
+        for mod_name in new_modules:
+            for forbidden in self.policy.forbidden_imports:
+                if mod_name == forbidden or mod_name.startswith(forbidden + "."):
+                    logger.error(
+                        f"Policy violation for {context.plugin_id}: "
+                        f"forbidden import '{mod_name}' detected (rule: '{forbidden}')"
+                    )
+                    return False
+
+        # --- Execution timeout ---
+        if self._context and self._context.started_at:
+            elapsed = (self._context.last_heartbeat or self._context.started_at) - self._context.started_at
+            if elapsed.total_seconds() > self.policy.execution_timeout:
+                logger.error(
+                    f"Policy violation for {context.plugin_id}: "
+                    f"execution exceeded {self.policy.execution_timeout}s timeout"
+                )
+                return False
+
         return True
 
     def _run_with_isolation(
