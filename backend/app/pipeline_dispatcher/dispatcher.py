@@ -7,12 +7,17 @@ Author: Tactical Core Engineering Team
 Version: 1.0
 """
 
-from dataclasses import dataclass, field
+import time
+import logging
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.core.pipeline import Pipeline
 from app.core.pipeline.context import PipelineContext
 from app.database import EventPersistenceService
+from app.pipeline_dispatcher.validation import EventValidator, ValidationError
+from app.pipeline_dispatcher.error_isolation import ErrorIsolation
+from app.pipeline_dispatcher.pipeline_logger import PipelineLogger
 
 
 @dataclass
@@ -49,11 +54,6 @@ class PipelineDispatcher:
     Architecture Rule:
     No plugin may write directly to the database.
     All plugin events MUST flow through this dispatcher.
-
-    Usage:
-        config = PipelineDispatcherConfig(persistence_service=service)
-        dispatcher = PipelineDispatcher(config)
-        dispatcher.dispatch(event_data, plugin="signal")
     """
 
     def __init__(
@@ -67,17 +67,20 @@ class PipelineDispatcher:
             config: Optional configuration. Defaults to a basic config.
         """
         self._config = config or PipelineDispatcherConfig()
-        # __post_init__ guarantees these are non-None
         assert self._config.pipeline is not None
         assert self._config.persistence_service is not None
         self._pipeline: Pipeline = self._config.pipeline
-        self._persistence_service: EventPersistenceService = (
-            self._config.persistence_service
-        )
+        self._persistence_service: EventPersistenceService = self._config.persistence_service
+        self._validator = EventValidator()
+        self._error_isolation = ErrorIsolation()
         self._metrics: Dict[str, int] = {
             "dispatched": 0,
             "failed": 0,
             "retried": 0,
+            "validation_errors": 0,
+            "timeout": 0,
+            "batch_dispatched": 0,
+            "batch_failed": 0,
         }
 
     @property
@@ -95,6 +98,8 @@ class PipelineDispatcher:
         """
         Dispatch an event through the pipeline to persistence.
 
+        Includes validation, error isolation, and retry logic.
+
         Args:
             event_data: Event data dictionary.
             plugin: Optional plugin identifier.
@@ -107,19 +112,63 @@ class PipelineDispatcher:
         effective_source = source or self._config.default_source
         effective_source_type = source_type or self._config.default_source_type
 
-        result = self._pipeline.execute(
-            event_data=event_data,
-            source=effective_source,
-            source_type=effective_source_type,
-            plugin=plugin,
-        )
+        if self._config.logging_enabled:
+            PipelineLogger.dispatch_start(plugin=plugin)
 
-        if result.success:
-            self._metrics["dispatched"] += 1
-            return str(result.event_id)
-        else:
+        # Validate event data
+        validation = self._error_isolation.wrap(
+            lambda: self._validator.validate(event_data, plugin=plugin),
+            plugin=plugin,
+            context="validation",
+        )
+        if not validation.success or not validation.result.valid:
+            self._metrics["validation_errors"] += 1
             self._metrics["failed"] += 1
+            if self._config.logging_enabled:
+                errors = validation.result.errors if validation.success else ["validation error"]
+                PipelineLogger.validation_failed(plugin=plugin, errors=errors)
             return None
+
+        # Execute with retry
+        event_id = None
+        max_attempts = self._config.max_retries
+        retry_delay = self._config.retry_delay_ms / 1000.0
+
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                self._metrics["retried"] += 1
+                if self._config.logging_enabled:
+                    PipelineLogger.retry_attempt(
+                        plugin=plugin,
+                        attempt=attempt,
+                        max_retries=max_attempts,
+                    )
+                time.sleep(retry_delay)
+
+            dispatch_op = lambda: self._pipeline.execute(
+                event_data=event_data,
+                source=effective_source,
+                source_type=effective_source_type,
+                plugin=plugin,
+            )
+            result = self._error_isolation.wrap(
+                dispatch_op,
+                plugin=plugin,
+                context=f"dispatch_attempt_{attempt+1}",
+            )
+
+            if result.success and result.result and result.result.success:
+                event_id = str(result.result.event_id)
+                self._metrics["dispatched"] += 1
+                if self._config.logging_enabled:
+                    PipelineLogger.dispatch_success(event_id=event_id, plugin=plugin)
+                return event_id
+
+        self._metrics["failed"] += 1
+        if self._config.logging_enabled:
+            error = "pipeline execution failed after retries"
+            PipelineLogger.dispatch_failed(plugin=plugin, error=error)
+        return None
 
     def dispatch_batch(
         self,
@@ -141,6 +190,9 @@ class PipelineDispatcher:
             event_id = self.dispatch(event_data, plugin=plugin)
             if event_id:
                 dispatched.append(event_id)
+                self._metrics["batch_dispatched"] += 1
+            else:
+                self._metrics["batch_failed"] += 1
         return dispatched
 
     def get_pipeline(self) -> Pipeline:
