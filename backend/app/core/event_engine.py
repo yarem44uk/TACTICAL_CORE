@@ -19,6 +19,7 @@ from app.core.event_registry import EventRegistry
 from app.core.event_bus import EventBus
 from app.core.event_history import EventHistory
 from app.core.event_hooks import EventHooks
+from app.database import EventPersistenceService
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class EventEngine:
 
     def __init__(
         self,
+        persistence_service: Optional[EventPersistenceService] = None,
         database_session: Optional[Any] = None,
         repository: Optional[Any] = None,
         websocket_broadcaster: Optional[Callable] = None,
@@ -42,6 +44,7 @@ class EventEngine:
         max_dispatch_workers: int = 10,
     ) -> None:
         """Initialize the Event Engine."""
+        self._persistence_service = persistence_service
         self._db_session = database_session
         self._repository = repository
         self._ws_broadcaster = websocket_broadcaster
@@ -76,7 +79,14 @@ class EventEngine:
         stages = [
             (ValidationStage(), 0),
             (EnrichmentStage(), 1),
-            (PersistenceStage(repository=self._repository, session=self._db_session), 2),
+            (
+                PersistenceStage(
+                    persistence_service=self._persistence_service,
+                    repository=self._repository,
+                    session=self._db_session,
+                ),
+                2,
+            ),
             (HistoryStage(history_manager=self._history), 3),
             (BroadcastStage(broadcaster=self._ws_broadcaster), 4),
             (DispatchStage(dispatcher=None, registry=self._registry), 5),
