@@ -17,6 +17,7 @@ Version: 1.0
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from datetime import datetime, timezone
@@ -377,7 +378,9 @@ class PluginManager(IPluginManager):
         with self._lock:
             for entry in self._registry.list():
                 executor = PluginExecutor(entry.plugin_id, SandboxPolicy())
-                if not executor.start(entry.instance.run):
+                # B1 fix: on_start() is async; executor.start() expects Callable[[], None].
+                # Wrap with asyncio.run() to create an event loop in the sandbox thread.
+                if not executor.start(lambda: asyncio.run(entry.instance.on_start())):
                     self._registry.update_status(entry.plugin_id, FAILED)
                     logger.error(f"Failed to start plugin {entry.plugin_id}")
                     continue

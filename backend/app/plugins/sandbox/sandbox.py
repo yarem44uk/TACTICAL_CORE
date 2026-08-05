@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import threading
+import time
 import traceback
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.plugins.sandbox.policy import SandboxPolicy
@@ -130,19 +133,101 @@ class PluginSandbox:
         target: Callable[[], None],
         context: PluginExecutionContext,
     ) -> None:
-        """Execute target with exception containment and policy enforcement."""
+        """Execute target with exception containment, policy enforcement, and runtime watchdog."""
+        watchdog_thread: threading.Thread | None = None
+        start_time = time.monotonic()
+
+        def _target_wrapper() -> None:
+            """Run target with heartbeat tracking."""
+            try:
+                target()
+            except Exception as exc:
+                logger.error(
+                    f"Sandbox target error for {context.plugin_id}: {exc}",
+                    exc_info=True,
+                )
+                if self._context:
+                    self._context.mark_cancelled()
+                    self._context.stopped_at = datetime.now(timezone.utc)
+                raise
+
         try:
-            # Enforce policy before execution
+            # Pre-execution policy check
             if not self._check_policy(context):
                 raise RuntimeError(f"Policy violation for plugin {context.plugin_id}")
 
-            target()
+            # B2: Run target in a sub-thread so the sandbox thread can watchdog it.
+            watchdog_thread = threading.Thread(
+                target=_target_wrapper,
+                daemon=True,
+                name=f"sandbox-target-{context.plugin_id}-{context.execution_id}",
+            )
+            watchdog_thread.start()
 
+            # Runtime watchdog loop — monitors policy, timeout, stop, cancellation.
+            while watchdog_thread.is_alive():
+                # Check execution timeout
+                elapsed = time.monotonic() - start_time
+                if elapsed > self.policy.execution_timeout:
+                    logger.error(
+                        f"Timeout violation for {context.plugin_id}: "
+                        f"exceeded {self.policy.execution_timeout}s"
+                    )
+                    self._stop_event.set()
+                    context.mark_cancelled()
+                    watchdog_thread.join(timeout=2.0)
+                    raise TimeoutError(
+                        f"Plugin {context.plugin_id} exceeded execution timeout "
+                        f"({self.policy.execution_timeout}s)"
+                    )
+
+                # Check stop signal
+                if self._stop_event.is_set():
+                    logger.info(f"Stop signal received for {context.plugin_id}")
+                    context.mark_cancelled()
+                    watchdog_thread.join(timeout=self.policy.shutdown_timeout)
+                    return
+
+                # Check cancellation token
+                if context.cancelled:
+                    logger.info(f"Cancelled execution for {context.plugin_id}")
+                    watchdog_thread.join(timeout=self.policy.shutdown_timeout)
+                    return
+
+                # Periodic policy re-validation
+                if not self._check_policy(context):
+                    logger.error(
+                        f"Runtime policy violation for {context.plugin_id}"
+                    )
+                    self._stop_event.set()
+                    context.mark_cancelled()
+                    watchdog_thread.join(timeout=2.0)
+                    raise RuntimeError(
+                        f"Runtime policy violation for plugin {context.plugin_id}"
+                    )
+
+                # Update heartbeat timestamp for timeout tracking
+                context.last_heartbeat = datetime.now(timezone.utc)
+
+                # Watchdog interval — 200ms sleep to avoid busy loop
+                self._stop_event.wait(timeout=0.2)
+
+            # Target completed normally — final policy check
+            if not self._check_policy(context):
+                logger.error(f"Post-execution policy violation for {context.plugin_id}")
+                context.mark_cancelled()
+                raise RuntimeError(
+                    f"Post-execution policy violation for plugin {context.plugin_id}"
+                )
+
+        except (TimeoutError, RuntimeError):
+            raise
         except Exception as exc:
             logger.error(
-                f"Sandbox execution error for {context.plugin_id}: {exc}",
+                f"Sandbox isolation error for {context.plugin_id}: {exc}",
                 exc_info=True,
             )
             if self._context:
                 self._context.mark_cancelled()
-                self._context.stopped_at = context.started_at  # mark as failed
+                self._context.stopped_at = datetime.now(timezone.utc)
+            raise
