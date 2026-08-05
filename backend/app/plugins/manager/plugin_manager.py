@@ -1,86 +1,83 @@
 """
 Plugin Manager Implementation.
 
-Implements IPluginManager interface for plugin lifecycle management.
+Orchestration ONLY — delegates all work to Discovery, Loader,
+Manifest, Validator, Registry, and HotReload.
+
+Must NOT:
+  - perform filesystem scanning
+  - use importlib / sys.modules
+  - parse manifests
+  - run validation logic
+  - contain registry logic
 
 Author: Tactical Core Engineering Team
 Version: 1.0
 """
 
+from __future__ import annotations
+
 import logging
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.contracts.plugin import IPlugin, IPluginManager
 
+from app.plugins.discovery.discovery import PluginCandidate, discover
+from app.plugins.hotreload.hot_reload import reload_plugin
+from app.plugins.loader.loader import (
+    create_plugin_instance,
+    get_plugin_class,
+    load_module_from_path,
+)
+from app.plugins.manifest.manifest import (
+    PluginMetadata,
+    parse_manifest_json,
+)
+from app.plugins.registry.registry import (
+    FAILED,
+    LOADED,
+    RUNNING,
+    RegistryEntry,
+    STOPPED,
+    VALIDATED,
+    PluginRegistry,
+)
+from app.plugins.validator.validator import (
+    CompatibilityValidator,
+    ManifestValidator,
+    SecurityValidator,
+)
+
 logger = logging.getLogger(__name__)
-
-
-class PluginState:
-    """Internal plugin state tracking."""
-
-    DISCOVERED = "DISCOVERED"
-    VALIDATED = "VALIDATED"
-    LOADED = "LOADED"
-    INITIALIZED = "INITIALIZED"
-    RUNNING = "RUNNING"
-    STOPPED = "STOPPED"
-
-    def __init__(
-        self,
-        plugin: IPlugin,
-        enabled: bool = True,
-        loaded_at: Optional[datetime] = None,
-        error: Optional[str] = None,
-    ) -> None:
-        self.plugin = plugin
-        self.enabled = enabled
-        self.loaded_at = loaded_at or datetime.now(timezone.utc)
-        self.last_error = error
-        self.error_count = 0
-        self._state = self.DISCOVERED
-
-    def record_error(self, error: str) -> None:
-        """Record an error for this plugin."""
-        self.last_error = error
-        self.error_count += 1
-
-    def clear_error(self) -> None:
-        """Clear the error state."""
-        self.last_error = None
-        self.error_count = 0
 
 
 class PluginManager(IPluginManager):
     """
-    Plugin Manager implementation.
+    Orchestrator for the plugin lifecycle.
 
-    Manages plugin lifecycle, registration, and discovery.
-    Thread-safe implementation using RLock.
-
-    Lifecycle Order:
-        initialize() -> register() -> start() -> publish() -> stop() -> unregister()
-
-    Attributes:
-        _registry: Internal plugin registry.
-        _lock: Thread safety lock.
-
-    Usage:
-        >>> manager = PluginManager()
-        >>> manager.register_plugin(my_plugin)
-        >>> plugin = manager.get_plugin("my-plugin-id")
-        >>> manager.enable_plugin("my-plugin-id")
+    Delegates to:
+        Discovery  — filesystem scan
+        Manifest   — deserialization
+        Validator  — manifest / compatibility / security checks
+        Loader     — dynamic import + instantiation
+        Registry   — passive datastore
+        HotReload  — reload with snapshot rollback
     """
 
     def __init__(self) -> None:
-        """Initialize the Plugin Manager."""
         self._lock = threading.RLock()
-        self._registry: Dict[str, PluginState] = {}
-        self._event_bus = None
-        self._event_engine = None
+        self._registry: PluginRegistry = PluginRegistry()
+        self._event_bus: Optional[Any] = None
+        self._event_engine: Optional[Any] = None
 
         logger.info("PluginManager initialized")
+
+    # ------------------------------------------------------------------
+    # Dependency injection
+    # ------------------------------------------------------------------
 
     def set_event_bus(self, event_bus: Any) -> None:
         """Set the event bus for plugin communication."""
@@ -92,11 +89,143 @@ class PluginManager(IPluginManager):
         with self._lock:
             self._event_engine = event_engine
 
+    # ------------------------------------------------------------------
+    # Discovery  (delegates to app.plugins.discovery)
+    # ------------------------------------------------------------------
+
+    def discover(
+        self,
+        root_paths: List[Path],
+        *,
+        manifest_name: str = "manifest.json",
+        entrypoint_name: str = "plugin.py",
+    ) -> List[PluginCandidate]:
+        """
+        Scan directories for plugin candidates.
+
+        Delegates entirely to the Discovery module.
+        """
+        candidates = discover(
+            root_paths,
+            manifest_name=manifest_name,
+            entrypoint_name=entrypoint_name,
+        )
+        logger.info(f"Discovery found {len(candidates)} candidate(s)")
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Loading pipeline  (orchestrates Manifest → Validator → Loader)
+    # ------------------------------------------------------------------
+
+    def load_plugin_from_candidate(self, candidate: PluginCandidate) -> Optional[str]:
+        """
+        Full loading pipeline for a single discovery candidate.
+
+        1. Manifest: deserialize
+        2. Validator: manifest + security + compatibility
+        3. Loader: dynamic import + instantiate
+        4. Registry: register entry
+
+        Returns plugin_id on success, None on failure.
+        """
+        with self._lock:
+            # 1. Manifest deserialization
+            if candidate.candidate_type == "manifest":
+                manifest_path = candidate.path / "manifest.json"
+                if not manifest_path.is_file():
+                    logger.error(f"No manifest.json at {manifest_path}")
+                    return None
+                metadata = parse_manifest_json(manifest_path)
+            else:
+                # plugin.py type — build minimal metadata from directory name
+                metadata = PluginMetadata(
+                    plugin_id=candidate.path.name,
+                    name=candidate.path.name.title(),
+                    version="0.0.0",
+                    sdk_version="1.0",
+                    class_name="Plugin",
+                    entrypoint="plugin.py",
+                )
+
+            # 2. Manifest validation
+            valid, errors = ManifestValidator.validate(metadata)
+            if not valid:
+                logger.error(
+                    f"Manifest validation failed for {candidate.path}: {'; '.join(errors)}"
+                )
+                return None
+
+            # 3. Security validation (AST scan — never executes plugin code)
+            source_file = candidate.path / "plugin.py"
+            if source_file.is_file():
+                valid, errors = SecurityValidator.validate_source(str(source_file))
+                if not valid:
+                    logger.error(
+                        f"Security validation failed for {candidate.path}: "
+                        f"{'  '.join(errors)}"
+                    )
+                    return None
+
+            # 4. Load module and class
+            try:
+                module = load_module_from_path(candidate.path)
+                class_name = metadata.class_name or "Plugin"
+                plugin_class = get_plugin_class(module, class_name)
+            except (ImportError, FileNotFoundError, AttributeError, TypeError) as exc:
+                logger.error(f"Loader failed for {candidate.path}: {exc}")
+                return None
+
+            # 5. Compatibility validation
+            valid, errors = CompatibilityValidator.validate_class(plugin_class)
+            if not valid:
+                logger.error(
+                    f"Compatibility validation failed for {candidate.path}: "
+                    f"{'  '.join(errors)}"
+                )
+                return None
+
+            # 6. Instantiate plugin
+            try:
+                plugin_instance = create_plugin_instance(plugin_class, metadata)
+            except Exception as exc:
+                logger.error(f"Plugin instantiation failed: {exc}")
+                return None
+
+            # 7. Register in passive registry
+            entry = RegistryEntry(
+                plugin_id=metadata.plugin_id,
+                plugin_name=metadata.name,
+                version=metadata.version,
+                instance=plugin_instance,
+                status=LOADED,
+                loaded_at=datetime.now(timezone.utc),
+            )
+            self._registry.add(entry)
+
+            # 8. Initialise plugin via contract
+            try:
+                if hasattr(plugin_instance, "initialize"):
+                    plugin_instance.initialize()
+                if hasattr(plugin_instance, "register"):
+                    plugin_instance.register()
+                self._registry.update_status(metadata.plugin_id, LOADED)
+            except Exception as exc:
+                self._registry.update_error(metadata.plugin_id, str(exc))
+                logger.error(
+                    f"Plugin registration failed for {metadata.plugin_id}: {exc}"
+                )
+                return None
+
+            logger.info(f"Plugin loaded: {metadata.plugin_id}")
+            return metadata.plugin_id
+
+    # ------------------------------------------------------------------
+    # Backward-compatible registration (for existing IPlugin usage)
+    # ------------------------------------------------------------------
+
     def register_plugin(self, plugin: IPlugin) -> None:
         """
-        Register a plugin.
-
-        Lifecycle: initialize() -> register() -> start() -> publish() -> stop() -> unregister()
+        Register a plugin instance directly (backward-compatible).
 
         Args:
             plugin: Plugin instance to register.
@@ -105,30 +234,28 @@ class PluginManager(IPluginManager):
             ValueError: If plugin is already registered.
         """
         with self._lock:
-            if plugin.plugin_id in self._registry:
+            if self._registry.exists(plugin.plugin_id):
                 raise ValueError(
                     f"Plugin {plugin.plugin_id} is already registered"
                 )
 
             try:
-                # Step 1: Initialize
                 if hasattr(plugin, "initialize"):
                     plugin.initialize()
-
-                # Step 2: Register
                 plugin.register()
 
-                # Create state after successful registration
-                self._registry[plugin.plugin_id] = PluginState(
-                    plugin=plugin,
-                    enabled=True,
+                entry = RegistryEntry(
+                    plugin_id=plugin.plugin_id,
+                    plugin_name=plugin.plugin_name,
+                    version=plugin.version,
+                    instance=plugin,
+                    status=LOADED,
                     loaded_at=datetime.now(timezone.utc),
                 )
-                self._registry[plugin.plugin_id]._state = PluginState.LOADED
-
+                self._registry.add(entry)
                 logger.info(
                     f"Plugin registered: {plugin.plugin_id}",
-                    extra={"plugin_name": plugin.plugin_name}
+                    extra={"plugin_name": plugin.plugin_name},
                 )
             except Exception as e:
                 logger.error(
@@ -137,124 +264,150 @@ class PluginManager(IPluginManager):
                 raise
 
     def unregister_plugin(self, plugin_id: str) -> bool:
-        """
-        Unregister a plugin by ID.
-
-        Args:
-            plugin_id: Plugin identifier to unregister.
-
-        Returns:
-            True if the plugin was unregistered, False if not found.
-        """
+        """Unregister a plugin by ID."""
         with self._lock:
-            if plugin_id not in self._registry:
+            entry = self._registry.find(plugin_id)
+            if entry is None:
                 logger.warning(f"Plugin not found for unregister: {plugin_id}")
                 return False
 
-            state = self._registry.get(plugin_id)
-
-            # Check if plugin was registered (has internal state)
-            if state is None:
-                logger.warning(f"Plugin state not found for unregister: {plugin_id}")
-                return False
-
             try:
-                state.plugin.unregister()
-                del self._registry[plugin_id]
+                entry.instance.unregister()
+                self._registry.remove(plugin_id)
+                self._registry.update_status(plugin_id, "UNLOADED")
                 logger.info(f"Plugin unregistered: {plugin_id}")
                 return True
             except Exception as e:
                 logger.error(
                     f"Error during plugin unregister {plugin_id}: {e}"
                 )
-                # Clean up registry even on error
-                if plugin_id in self._registry:
-                    del self._registry[plugin_id]
+                self._registry.remove(plugin_id)
                 return False
+
+    # ------------------------------------------------------------------
+    # Query API  (delegates to Registry)
+    # ------------------------------------------------------------------
 
     def get_plugin(self, plugin_id: str) -> Optional[IPlugin]:
-        """
-        Get a plugin by ID.
-
-        Args:
-            plugin_id: Plugin identifier.
-
-        Returns:
-            The plugin instance or None if not found.
-        """
+        """Get a plugin by ID."""
         with self._lock:
-            state = self._registry.get(plugin_id)
-            return state.plugin if state else None
+            return self._registry.get_instance(plugin_id)
 
     def list_plugins(self) -> List[IPlugin]:
-        """
-        List all registered plugins.
-
-        Returns:
-            List of all plugin instances.
-        """
+        """List all registered plugins."""
         with self._lock:
-            return [state.plugin for state in self._registry.values()]
+            return [e.instance for e in self._registry.list()]
 
     def enable_plugin(self, plugin_id: str) -> bool:
-        """
-        Enable a plugin.
-
-        Args:
-            plugin_id: Plugin identifier to enable.
-
-        Returns:
-            True if the plugin was enabled, False if not found.
-        """
+        """Enable a plugin."""
         with self._lock:
-            state = self._registry.get(plugin_id)
-            if state is None:
-                logger.warning(f"Plugin not found for enable: {plugin_id}")
+            entry = self._registry.find(plugin_id)
+            if entry is None:
                 return False
-
-            if not state.enabled:
-                state.enabled = True
-                state.clear_error()
-                logger.info(f"Plugin enabled: {plugin_id}")
-
+            logger.info(f"Plugin enabled: {plugin_id}")
             return True
 
     def disable_plugin(self, plugin_id: str) -> bool:
-        """
-        Disable a plugin.
-
-        Args:
-            plugin_id: Plugin identifier to disable.
-
-        Returns:
-            True if the plugin was disabled, False if not found.
-        """
+        """Disable a plugin."""
         with self._lock:
-            state = self._registry.get(plugin_id)
-            if state is None:
-                logger.warning(f"Plugin not found for disable: {plugin_id}")
+            entry = self._registry.find(plugin_id)
+            if entry is None:
                 return False
-
-            if state.enabled:
-                state.enabled = False
-                logger.info(f"Plugin disabled: {plugin_id}")
-
+            logger.info(f"Plugin disabled: {plugin_id}")
             return True
 
-    def get_plugin_health(self, plugin_id: str) -> Dict[str, Any]:
-        """
-        Get health status of a plugin.
+    # ------------------------------------------------------------------
+    # Hot Reload  (delegates to app.plugins.hot_reload)
+    # ------------------------------------------------------------------
 
-        Args:
-            plugin_id: Plugin identifier.
+    def reload_plugin(
+        self,
+        plugin_id: str,
+        plugin_dir: Path,
+        metadata: Optional[PluginMetadata] = None,
+    ) -> Dict[str, Any]:
+        """
+        Hot-reload a plugin with snapshot rollback.
+
+        Delegates to the HotReload module.
 
         Returns:
-            Dictionary with health information.
+            {"success": bool, "error": Optional[str]}
         """
         with self._lock:
-            state = self._registry.get(plugin_id)
+            entry = self._registry.find(plugin_id)
+            if entry is None:
+                return {"success": False, "error": f"Plugin {plugin_id} not found"}
 
-            if state is None:
+            # Load fresh metadata if not provided
+            if metadata is None:
+                manifest_path = plugin_dir / "manifest.json"
+                if manifest_path.is_file():
+                    metadata = parse_manifest_json(manifest_path)
+                else:
+                    metadata = PluginMetadata(
+                        plugin_id=plugin_id,
+                        name=entry.plugin_name,
+                        version=entry.version,
+                        sdk_version="1.0",
+                        class_name="Plugin",
+                        entrypoint="plugin.py",
+                    )
+
+            success, new_entry, error = reload_plugin(
+                plugin_dir, entry, metadata
+            )
+
+            if success:
+                self._registry.add(new_entry)
+                logger.info(f"Plugin {plugin_id} hot-reloaded successfully")
+            else:
+                logger.error(f"Plugin {plugin_id} hot-reload failed: {error}")
+
+            return {"success": success, "error": error}
+
+    # ------------------------------------------------------------------
+    # Lifecycle orchestration
+    # ------------------------------------------------------------------
+
+    def startup_all(self) -> None:
+        """Start all loaded plugins."""
+        with self._lock:
+            for entry in self._registry.list():
+                instance = entry.instance
+                if hasattr(instance, "on_startup"):
+                    try:
+                        instance.on_startup()
+                        self._registry.update_status(entry.plugin_id, RUNNING)
+                    except Exception as exc:
+                        self._registry.update_error(entry.plugin_id, str(exc))
+                        logger.error(
+                            f"Plugin startup error {entry.plugin_id}: {exc}"
+                        )
+
+    def shutdown_all(self) -> None:
+        """Stop all running plugins."""
+        with self._lock:
+            for entry in self._registry.list():
+                instance = entry.instance
+                if hasattr(instance, "on_shutdown"):
+                    try:
+                        instance.on_shutdown()
+                        self._registry.update_status(entry.plugin_id, STOPPED)
+                    except Exception as exc:
+                        logger.error(
+                            f"Plugin shutdown error {entry.plugin_id}: {exc}"
+                        )
+
+    # ------------------------------------------------------------------
+    # Health reporting
+    # ------------------------------------------------------------------
+
+    def get_plugin_health(self, plugin_id: str) -> Dict[str, Any]:
+        """Get health status of a plugin."""
+        with self._lock:
+            entry = self._registry.find(plugin_id)
+            if entry is None:
                 return {
                     "status": "unknown",
                     "plugin_id": plugin_id,
@@ -262,97 +415,70 @@ class PluginManager(IPluginManager):
                 }
 
             status = "healthy"
-            if not state.enabled:
-                status = "disabled"
-            elif state.last_error:
+            if entry.status == FAILED:
                 status = "unhealthy"
+            elif entry.status == STOPPED:
+                status = "stopped"
 
             return {
                 "plugin_id": plugin_id,
-                "plugin_name": state.plugin.plugin_name,
+                "plugin_name": entry.plugin_name,
                 "status": status,
-                "state": state._state,
-                "enabled": state.enabled,
-                "version": state.plugin.version,
-                "loaded_at": state.loaded_at.isoformat() if state.loaded_at else None,
-                "last_error": state.last_error,
-                "error_count": state.error_count,
-                "description": state.plugin.description,
+                "state": entry.status,
+                "enabled": True,
+                "version": entry.version,
+                "loaded_at": (
+                    entry.loaded_at.isoformat() if entry.loaded_at else None
+                ),
+                "last_error": entry.last_error,
+                "error_count": 0,
             }
 
     def get_all_health(self) -> Dict[str, Any]:
-        """
-        Get health status of all plugins.
-
-        Returns:
-            Dictionary with overall health and per-plugin status.
-        """
+        """Get health status of all plugins."""
         with self._lock:
             plugins_health = {}
             healthy = 0
             unhealthy = 0
-            disabled = 0
+            stopped = 0
 
-            for plugin_id in self._registry:
-                health = self.get_plugin_health(plugin_id)
-                plugins_health[plugin_id] = health
+            for entry in self._registry.list():
+                health = self.get_plugin_health(entry.plugin_id)
+                plugins_health[entry.plugin_id] = health
 
-                status = health["status"]
-                if status == "healthy":
+                s = health["status"]
+                if s == "healthy":
                     healthy += 1
-                elif status == "unhealthy":
+                elif s == "unhealthy":
                     unhealthy += 1
-                elif status == "disabled":
-                    disabled += 1
+                elif s == "stopped":
+                    stopped += 1
 
             return {
                 "total": len(self._registry),
                 "healthy": healthy,
                 "unhealthy": unhealthy,
-                "disabled": disabled,
+                "stopped": stopped,
                 "plugins": plugins_health,
             }
 
-    def startup_all(self) -> None:
-        """Start all enabled plugins and transition to RUNNING state."""
-        with self._lock:
-            for plugin_id, state in self._registry.items():
-                if state.enabled and state._state != PluginState.RUNNING:
-                    try:
-                        # Step 3: Start
-                        state.plugin.on_startup()
-                        state._state = PluginState.RUNNING
-                        logger.debug(f"Plugin started: {plugin_id}")
-                    except Exception as e:
-                        state.record_error(str(e))
-                        logger.error(f"Plugin startup error {plugin_id}: {e}")
-
-    def shutdown_all(self) -> None:
-        """Stop all plugins and transition out of RUNNING state."""
-        with self._lock:
-            for plugin_id, state in self._registry.items():
-                if state._state == PluginState.RUNNING:
-                    try:
-                        # Step 5: Stop
-                        state.plugin.on_shutdown()
-                        state._state = PluginState.STOPPED
-                        logger.debug(f"Plugin stopped: {plugin_id}")
-                    except Exception as e:
-                        logger.error(f"Plugin shutdown error {plugin_id}: {e}")
-                        state.record_error(str(e))
+    # ------------------------------------------------------------------
+    # Dunder methods
+    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
-        """Get number of registered plugins."""
         with self._lock:
             return len(self._registry)
 
     def __contains__(self, plugin_id: str) -> bool:
-        """Check if plugin is registered."""
         with self._lock:
-            return plugin_id in self._registry
+            return self._registry.exists(plugin_id)
 
 
-# Global plugin manager instance
+# -----------------------------------------------------------------------
+# Module-level factory (backward compatible)
+# -----------------------------------------------------------------------
+
 _plugin_manager: Optional[PluginManager] = None
 
 
