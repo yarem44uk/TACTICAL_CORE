@@ -1,0 +1,6 @@
+
+__pycache__/
+*.pyc
+file::memory:
+file:memdb
+security_test_pool.db

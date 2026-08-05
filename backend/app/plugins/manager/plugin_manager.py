@@ -274,7 +274,6 @@ class PluginManager(IPluginManager):
             try:
                 entry.instance.unregister()
                 self._registry.remove(plugin_id)
-                self._registry.update_status(plugin_id, "UNLOADED")
                 logger.info(f"Plugin unregistered: {plugin_id}")
                 return True
             except Exception as e:

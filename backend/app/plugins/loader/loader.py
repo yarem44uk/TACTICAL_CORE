@@ -133,6 +133,18 @@ def reload_module(module: ModuleType) -> ModuleType:
     return importlib.reload(module)
 
 
+def get_module(module_name: str) -> Optional[ModuleType]:
+    """
+    Look up a module in ``sys.modules`` by name.
+
+    Only the Loader may access ``sys.modules``.
+
+    Returns:
+        The module if present, or ``None``.
+    """
+    return sys.modules.get(module_name)
+
+
 def unload_module(module: ModuleType) -> None:
     """
     Remove a module from ``sys.modules`` so it can be freshly imported later.

@@ -14,7 +14,6 @@ Version: 1.0
 
 from __future__ import annotations
 
-import copy
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +21,7 @@ from typing import Any, List, Optional, Tuple
 
 from app.plugins.loader.loader import (
     create_plugin_instance,
+    get_module,
     get_plugin_class,
     load_module_from_path,
     unload_module,
@@ -50,11 +50,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ReloadSnapshot:
-    """Snapshot of a plugin's state before a hot reload attempt."""
+    """Lightweight snapshot of a plugin's state before a hot reload attempt.
 
-    entry: RegistryEntry
+    Does NOT copy the plugin instance, threads, locks, sockets, or DB connections.
+    Stores only the metadata needed to restore the previous registry entry.
+    """
+
+    plugin_id: str
+    plugin_name: str
+    version: str
+    status: str
     module_name: str
     metadata: PluginMetadata
+    instance: Any = field(default=None, repr=False)
 
 
 def _validate_plugin(
@@ -120,19 +128,23 @@ def reload_plugin(
     logger.info(f"Hot reload: stopping plugin {current_entry.plugin_id}")
     _stop_plugin(current_entry.instance)
 
-    # 2. CREATE SNAPSHOT
+    # 2. CREATE SNAPSHOT (lightweight — no deepcopy of instance/locks/sockets)
     snapshot = ReloadSnapshot(
-        entry=copy.deepcopy(current_entry),
+        plugin_id=current_entry.plugin_id,
+        plugin_name=current_entry.plugin_name,
+        version=current_entry.version,
+        status=current_entry.status,
         module_name=f"tactical_plugins.{current_entry.plugin_id}",
         metadata=metadata,
+        instance=current_entry.instance,
     )
 
     # 3. UNLOAD old module
     old_module_name = snapshot.module_name
     try:
-        import sys
-        if old_module_name in sys.modules:
-            unload_module(sys.modules[old_module_name])
+        old_mod = get_module(old_module_name)
+        if old_mod is not None:
+            unload_module(old_mod)
     except Exception as exc:
         logger.warning(f"Unload warning: {exc}")
 
@@ -175,9 +187,9 @@ def reload_plugin(
         logger.info(f"Rolling back plugin {current_entry.plugin_id}")
 
         try:
-            _start_plugin(snapshot.entry.instance)
+            _start_plugin(snapshot.instance)
         except Exception as restore_err:
             logger.error(f"Rollback restore failed: {restore_err}")
-            return False, snapshot.entry, f"Reload failed and rollback failed: {exc}"
+            return False, current_entry, f"Reload failed and rollback failed: {exc}"
 
-        return False, snapshot.entry, str(exc)
+        return False, current_entry, str(exc)
