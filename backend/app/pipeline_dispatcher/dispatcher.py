@@ -9,6 +9,7 @@ Version: 1.0
 
 import time
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -73,6 +74,7 @@ class PipelineDispatcher:
         self._persistence_service: EventPersistenceService = self._config.persistence_service
         self._validator = EventValidator()
         self._error_isolation = ErrorIsolation()
+        self._metrics_lock = threading.Lock()
         self._metrics: Dict[str, int] = {
             "dispatched": 0,
             "failed": 0,
@@ -122,8 +124,9 @@ class PipelineDispatcher:
             context="validation",
         )
         if not validation.success or not validation.result.valid:
-            self._metrics["validation_errors"] += 1
-            self._metrics["failed"] += 1
+            with self._metrics_lock:
+                self._metrics["validation_errors"] += 1
+                self._metrics["failed"] += 1
             if self._config.logging_enabled:
                 errors = validation.result.errors if validation.success else ["validation error"]
                 PipelineLogger.validation_failed(plugin=plugin, errors=errors)
@@ -133,10 +136,14 @@ class PipelineDispatcher:
         event_id = None
         max_attempts = self._config.max_retries
         retry_delay = self._config.retry_delay_ms / 1000.0
+        timeout_ms = self._config.timeout_ms
+
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
 
         for attempt in range(max_attempts):
             if attempt > 0:
-                self._metrics["retried"] += 1
+                with self._metrics_lock:
+                    self._metrics["retried"] += 1
                 if self._config.logging_enabled:
                     PipelineLogger.retry_attempt(
                         plugin=plugin,
@@ -145,8 +152,20 @@ class PipelineDispatcher:
                     )
                 time.sleep(retry_delay)
 
-            dispatch_op = lambda: self._pipeline.execute(
-                event_data=event_data,
+            # Check timeout before each attempt
+            elapsed = (time.monotonic() - deadline)
+            if elapsed > 0:
+                with self._metrics_lock:
+                    self._metrics["timeout"] += 1
+                    self._metrics["failed"] += 1
+                if self._config.logging_enabled:
+                    PipelineLogger.timeout(plugin=plugin)
+                return None
+
+            # Capture immutable copy to avoid lambda late-binding
+            data = dict(event_data)
+            dispatch_op = lambda d=data: self._pipeline.execute(
+                event_data=d,
                 source=effective_source,
                 source_type=effective_source_type,
                 plugin=plugin,
@@ -159,12 +178,14 @@ class PipelineDispatcher:
 
             if result.success and result.result and result.result.success:
                 event_id = str(result.result.event_id)
-                self._metrics["dispatched"] += 1
+                with self._metrics_lock:
+                    self._metrics["dispatched"] += 1
                 if self._config.logging_enabled:
                     PipelineLogger.dispatch_success(event_id=event_id, plugin=plugin)
                 return event_id
 
-        self._metrics["failed"] += 1
+        with self._metrics_lock:
+            self._metrics["failed"] += 1
         if self._config.logging_enabled:
             error = "pipeline execution failed after retries"
             PipelineLogger.dispatch_failed(plugin=plugin, error=error)
@@ -190,9 +211,11 @@ class PipelineDispatcher:
             event_id = self.dispatch(event_data, plugin=plugin)
             if event_id:
                 dispatched.append(event_id)
-                self._metrics["batch_dispatched"] += 1
+                with self._metrics_lock:
+                    self._metrics["batch_dispatched"] += 1
             else:
-                self._metrics["batch_failed"] += 1
+                with self._metrics_lock:
+                    self._metrics["batch_failed"] += 1
         return dispatched
 
     def get_pipeline(self) -> Pipeline:

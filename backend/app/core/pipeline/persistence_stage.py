@@ -81,7 +81,12 @@ class PersistenceStage(BaseStage):
     def _execute_with_repository(
         self, context: PipelineContext
     ) -> Optional[Dict[str, Any]]:
-        """Persist via direct repository (backward compatible)."""
+        """Persist via direct repository.
+
+        DEPRECATED: This path exists only for backward compatibility.
+        New code must use EventPersistenceService via the persistence_service
+        parameter. This method will be removed in a future major release.
+        """
         try:
             # Ensure event_data carries the pipeline-generated event_id
             data = dict(context.event_data)
