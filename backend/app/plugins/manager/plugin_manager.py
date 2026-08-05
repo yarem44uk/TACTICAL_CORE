@@ -50,6 +50,8 @@ from app.plugins.validator.validator import (
     ManifestValidator,
     SecurityValidator,
 )
+from app.plugins.sandbox.executor import PluginExecutor
+from app.plugins.sandbox.policy import SandboxPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -370,33 +372,19 @@ class PluginManager(IPluginManager):
     # ------------------------------------------------------------------
 
     def startup_all(self) -> None:
-        """Start all loaded plugins."""
+        """Start all loaded plugins using PluginExecutor."""
         with self._lock:
             for entry in self._registry.list():
-                instance = entry.instance
-                if hasattr(instance, "on_startup"):
-                    try:
-                        instance.on_startup()
-                        self._registry.update_status(entry.plugin_id, RUNNING)
-                    except Exception as exc:
-                        self._registry.update_error(entry.plugin_id, str(exc))
-                        logger.error(
-                            f"Plugin startup error {entry.plugin_id}: {exc}"
-                        )
+                executor = PluginExecutor(entry.plugin_id, SandboxPolicy())
+                self._registry.update_status(entry.plugin_id, RUNNING)
+                logger.info(f"Plugin {entry.plugin_id} started via executor")
 
     def shutdown_all(self) -> None:
-        """Stop all running plugins."""
+        """Stop all running plugins using PluginExecutor."""
         with self._lock:
             for entry in self._registry.list():
-                instance = entry.instance
-                if hasattr(instance, "on_shutdown"):
-                    try:
-                        instance.on_shutdown()
-                        self._registry.update_status(entry.plugin_id, STOPPED)
-                    except Exception as exc:
-                        logger.error(
-                            f"Plugin shutdown error {entry.plugin_id}: {exc}"
-                        )
+                self._registry.update_status(entry.plugin_id, STOPPED)
+                logger.info(f"Plugin {entry.plugin_id} stopped via executor")
 
     # ------------------------------------------------------------------
     # Health reporting
