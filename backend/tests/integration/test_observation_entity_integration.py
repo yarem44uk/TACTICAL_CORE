@@ -28,7 +28,7 @@ class TestEntityBridge:
     @pytest.mark.asyncio
     async def test_bridge_initialization(self):
         """Test EntityBridge can be initialized with session."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
         from sqlalchemy import create_engine
         from sqlalchemy.orm import Session, sessionmaker
 
@@ -37,16 +37,16 @@ class TestEntityBridge:
 
         # Bridge should initialize without error
         # Note: In actual test, session would be passed
-        bridge = EntityBridge(session=None)  # Would be real session in actual test
+        bridge = ObservationEntityBridge(session=None)  # Would be real session in actual test
 
         assert bridge is not None
 
     @pytest.mark.asyncio
     async def test_identity_extraction_signal(self):
         """Test identity extraction from Signal observation."""
-        from app.intelligence.entity.bridge import EntityBridge, IDENTITY_FIELD_MAPPING
+        from app.intelligence.entity.bridge import ObservationEntityBridge, IDENTITY_FIELD_MAPPING
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         # Mock observation
         class MockObservation:
@@ -74,10 +74,10 @@ class TestEntityBridge:
     @pytest.mark.asyncio
     async def test_identity_extraction_radio(self):
         """Test identity extraction from Radio observation."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
         from app.intelligence.entity.types import EntityType
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class MockObservation:
             id = uuid4()
@@ -101,9 +101,9 @@ class TestEntityBridge:
     @pytest.mark.asyncio
     async def test_no_identity_for_unsupported_source(self):
         """Test observation with unsupported source returns None."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class MockObservation:
             id = uuid4()
@@ -119,9 +119,9 @@ class TestEntityBridge:
     @pytest.mark.asyncio
     async def test_no_identity_missing_fields(self):
         """Test observation with missing identity fields returns None."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class MockObservation:
             id = uuid4()
@@ -255,9 +255,9 @@ class TestConnectorCoverage:
     @pytest.mark.asyncio
     async def test_signal_connector_identity(self):
         """Test Signal connector identity extraction."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class SignalObs:
             id = uuid4()
@@ -275,9 +275,9 @@ class TestConnectorCoverage:
     @pytest.mark.asyncio
     async def test_telegram_connector_identity(self):
         """Test Telegram connector identity extraction."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class TelegramObs:
             id = uuid4()
@@ -295,9 +295,9 @@ class TestConnectorCoverage:
     @pytest.mark.asyncio
     async def test_mqtt_connector_identity(self):
         """Test MQTT connector identity extraction."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class MqttObs:
             id = uuid4()
@@ -315,9 +315,9 @@ class TestConnectorCoverage:
     @pytest.mark.asyncio
     async def test_radio_connector_identity(self):
         """Test Radio connector identity extraction."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class RadioObs:
             id = uuid4()
@@ -335,9 +335,9 @@ class TestConnectorCoverage:
     @pytest.mark.asyncio
     async def test_atak_connector_identity(self):
         """Test ATAK connector identity extraction."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class AtakObs:
             id = uuid4()
@@ -359,9 +359,9 @@ class TestObservationPreservation:
     @pytest.mark.asyncio
     async def test_entity_creation_does_not_modify_observation(self):
         """Test that Entity creation doesn't affect Observation."""
-        from app.intelligence.entity.bridge import EntityBridge
+        from app.intelligence.entity.bridge import ObservationEntityBridge
 
-        bridge = EntityBridge(session=None)
+        bridge = ObservationEntityBridge(session=None)
 
         class MockObs:
             id = uuid4()

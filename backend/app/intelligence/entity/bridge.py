@@ -61,12 +61,12 @@ IDENTITY_FIELD_MAPPING = {
 }
 
 
-class EntityBridgeError(Exception):
-    """Raised when entity bridge operations fail."""
+class ObservationEntityBridgeError(Exception):
+    """Raised when observation entity bridge operations fail."""
     pass
 
 
-class EntityBridge:
+class ObservationEntityBridge:
     """Bridge between Observation and Entity subsystems.
 
     This class integrates with ObservationEngine via pipeline_forwarder.
@@ -74,11 +74,11 @@ class EntityBridge:
 
     Usage:
         >>> from sqlalchemy.orm import Session
-        >>> from app.intelligence.entity.bridge import EntityBridge, create_entity_forwarder
+        >>> from app.intelligence.entity.bridge import ObservationEntityBridge, create_entity_forwarder
         >>>
         >>> # Create bridge with session
         >>> session = get_session()
-        >>> bridge = EntityBridge(session)
+        >>> bridge = ObservationEntityBridge(session)
         >>>
         >>> # Create forwarder callback for ObservationEngine
         >>> forwarder = create_entity_forwarder(session)
@@ -283,7 +283,7 @@ def create_entity_forwarder(session: Any) -> callable:
     Returns:
         Callable suitable for pipeline_forwarder parameter.
     """
-    bridge = EntityBridge(session)
+    bridge = ObservationEntityBridge(session)
 
     async def forwarder(observation: Observation) -> bool:
         """Forward observation to entity system.
@@ -311,7 +311,7 @@ def create_sync_entity_forwarder(session: Any) -> callable:
     Returns:
         Synchronous callable suitable for pipeline_forwarder.
     """
-    bridge = EntityBridge(session)
+    bridge = ObservationEntityBridge(session)
 
     def forwarder(observation: Observation) -> bool:
         """Forward observation to entity system (sync).
