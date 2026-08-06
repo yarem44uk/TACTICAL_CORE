@@ -38,15 +38,29 @@ class EventEngine:
         websocket_broadcaster: Optional[Callable] = None,
         ai_notifier: Optional[Callable] = None,
         plugin_notifier: Optional[Callable] = None,
+        entity_bridge: Optional[Any] = None,
         enable_parallel_dispatch: bool = True,
         max_dispatch_workers: int = 10,
     ) -> None:
-        """Initialize the Event Engine."""
+        """
+        Initialize the Event Engine.
+
+        Args:
+            database_session: Database session for persistence.
+            repository: Repository for event storage.
+            websocket_broadcaster: WebSocket broadcast callback.
+            ai_notifier: AI notification callback.
+            plugin_notifier: Plugin notification callback.
+            entity_bridge: Optional EntityBridge for entity-layer updates.
+            enable_parallel_dispatch: Enable parallel event dispatch.
+            max_dispatch_workers: Maximum concurrent dispatch workers.
+        """
         self._db_session = database_session
         self._repository = repository
         self._ws_broadcaster = websocket_broadcaster
         self._ai_notifier = ai_notifier
         self._plugin_notifier = plugin_notifier
+        self._entity_bridge = entity_bridge
 
         self._registry = EventRegistry()
         self._bus = EventBus()
@@ -76,7 +90,7 @@ class EventEngine:
         stages = [
             (ValidationStage(), 0),
             (EnrichmentStage(), 1),
-            (PersistenceStage(repository=self._repository, session=self._db_session), 2),
+            (PersistenceStage(repository=self._repository, session=self._db_session, entity_bridge=self._entity_bridge), 2),
             (HistoryStage(history_manager=self._history), 3),
             (BroadcastStage(broadcaster=self._ws_broadcaster), 4),
             (DispatchStage(dispatcher=None, registry=self._registry), 5),
