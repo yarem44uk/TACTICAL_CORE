@@ -1,0 +1,16 @@
+from __future__ import annotations
+import threading
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+
+class IIdentityRepository(ABC):
+    @abstractmethod
+    def get(self, identity_key: str) -> Optional[Dict[str, Any]]: ...
+    @abstractmethod
+    def save(self, data: Dict[str, Any]) -> None: ...
+    @abstractmethod
+    def delete(self, identity_key: str) -> bool: ...
+    @abstractmethod
+    def list_all(self) -> List[Dict[str, Any]]: ...
+    @abstractmethod
+    def lock(self) -> threading.RLock: ...
