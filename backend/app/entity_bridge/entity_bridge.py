@@ -124,8 +124,13 @@ class EntityBridge(IEntityBridge):
             return []
 
         # Extract the entity payload — nested under "entity" if present,
-        # otherwise use the remaining event_data keys.
-        updates = event_data.get("entity", event_data.copy())
+        # otherwise use the remaining event_data keys (excluding entity_type/entity_id).
+        raw_updates = event_data.get("entity")
+        if raw_updates is not None:
+            updates: Dict[str, Any] = dict(raw_updates)
+        else:
+            updates = {k: v for k, v in event_data.items()
+                       if k not in ("entity_type", "entity_id")}
 
         request = EntityUpdateRequest(
             entity_type=entity_type,
