@@ -1,68 +1,90 @@
 """
 TACTICAL CORE — Event Factory
-WO-013-001
+WO-013-001 (updated WO-013-002)
 
-Converts raw source data into canonical Event structures compatible with
+Converts raw source data into canonical Event objects compatible with
 the WO-012 Event Processing Layer.
+
+After WO-013-002: returns real Event instances instead of dictionaries.
 """
 
-import uuid
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Any
+
+from app.event.event import Event
+from app.event.event_metadata import EventMetadata
+from app.event.event_types import EventType
 
 from ..interfaces.i_event_factory import IEventFactory
 
 
 class EventFactory(IEventFactory):
-    """Factory for creating canonical events from raw source data.
+    """Factory for creating canonical Event objects from raw source data.
 
     Responsibilities:
-    - Normalize timestamps to UTC ISO-8601
+    - Normalize timestamps to UTC
     - Attach source identification
     - Preserve protocol-specific metadata without leaking structure
-    - Generate unique correlation IDs
+    - Return immutable Event instances (frozen dataclass)
 
-    The resulting event dict is compatible with WO-012 Event Processing Layer.
+    The resulting Event is fully compatible with WO-012 Event Processing Layer,
+    Event Pipeline, Event Filter, Event Dispatcher, and Event Repository.
     """
 
     def create_event(
         self,
         raw_data: dict[str, Any],
         source_name: str,
+        event_type: EventType | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Create a canonical event from raw source data.
+    ) -> Event:
+        """Create a canonical Event from raw source data.
 
         Args:
             raw_data: Protocol-specific raw event from the adapter.
             source_name: Name of the source adapter.
+            event_type: Explicit event type. Falls back to EventType.CUSTOM.
             metadata: Optional additional metadata.
 
         Returns:
-            Canonical event dictionary with:
-            - id: unique event identifier
-            - source: source adapter name
-            - timestamp: UTC ISO-8601 string
-            - data: normalized event payload
-            - metadata: merged source + user metadata
-        """
-        timestamp = self._normalize_timestamp(raw_data)
-        event_id = str(uuid.uuid4())
+            A canonical Event instance compatible with WO-012.
 
+        Raises:
+            ValueError: If source_name is empty.
+            TypeError: If raw_data is not a dict.
+        """
+        self._validate_inputs(raw_data, source_name)
+
+        timestamp = self._normalize_timestamp(raw_data)
         event_data = self._extract_data(raw_data)
         event_metadata = self._build_metadata(raw_data, source_name, metadata)
 
-        return {
-            "id": event_id,
-            "source": source_name,
-            "timestamp": timestamp,
-            "data": event_data,
-            "metadata": event_metadata,
-        }
+        if event_type is None:
+            event_type = EventType.CUSTOM
+
+        return Event(
+            event_type=event_type,
+            timestamp=timestamp,
+            source=source_name,
+            payload=event_data,
+            metadata=event_metadata,
+        )
 
     @staticmethod
-    def _normalize_timestamp(raw_data: dict[str, Any]) -> str:
-        """Normalize timestamp to UTC ISO-8601.
+    def _validate_inputs(raw_data: dict[str, Any], source_name: str) -> None:
+        """Validate factory inputs."""
+        if not isinstance(raw_data, dict):
+            raise TypeError(
+                f"raw_data must be a dict, got {type(raw_data).__name__}"
+            )
+        if not source_name or not isinstance(source_name, str) or not source_name.strip():
+            raise ValueError("source_name must be a non-empty string")
+
+    @staticmethod
+    def _normalize_timestamp(raw_data: dict[str, Any]) -> datetime:
+        """Normalize timestamp to UTC datetime.
 
         Tries common timestamp keys, falls back to now().
         """
@@ -70,22 +92,22 @@ class EventFactory(IEventFactory):
             if key in raw_data:
                 value = raw_data[key]
                 if isinstance(value, datetime):
-                    return value.astimezone(timezone.utc).isoformat()
+                    return value.astimezone(timezone.utc)
                 if isinstance(value, (int, float)):
-                    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+                    return datetime.fromtimestamp(value, tz=timezone.utc)
                 if isinstance(value, str):
                     try:
                         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                        return dt.astimezone(timezone.utc).isoformat()
+                        return dt.astimezone(timezone.utc)
                     except ValueError:
                         pass
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(timezone.utc)
 
     @staticmethod
     def _extract_data(raw_data: dict[str, Any]) -> dict[str, Any]:
         """Extract event payload, removing known protocol metadata.
 
-        Protocol-specific fields are moved to metadata, not leaked into data.
+        Protocol-specific fields are moved to metadata, not leaked into payload.
         """
         protocol_keys = {"timestamp", "time", "datetime", "date", "ts", "created_at"}
         return {k: v for k, v in raw_data.items() if k not in protocol_keys}
@@ -95,13 +117,21 @@ class EventFactory(IEventFactory):
         raw_data: dict[str, Any],
         source_name: str,
         extra_metadata: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        """Build merged metadata dict."""
+    ) -> EventMetadata:
+        """Build EventMetadata from source data."""
         protocol_keys = {"timestamp", "time", "datetime", "date", "ts", "created_at"}
-        protocol_metadata = {k: v for k, v in raw_data.items() if k in protocol_keys}
-        protocol_metadata["source_name"] = source_name
+        properties: dict[str, Any] = {
+            k: v for k, v in raw_data.items() if k in protocol_keys
+        }
+        properties["source_name"] = source_name
 
         if extra_metadata:
-            protocol_metadata.update(extra_metadata)
+            properties.update(extra_metadata)
 
-        return protocol_metadata
+        correlation_id = raw_data.get("correlation_id")
+
+        return EventMetadata(
+            tags=[],
+            properties=properties,
+            correlation_id=correlation_id,
+        )

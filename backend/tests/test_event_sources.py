@@ -11,13 +11,15 @@ Tests for Source Adapter Framework:
 
 import threading
 import time
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
-from backend.app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
-from backend.app.event_sources.factory.event_factory import EventFactory
-from backend.app.event_sources.registry.source_registry import SourceRegistry
+from app.event.event import Event
+from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
+from app.event_sources.factory.event_factory import EventFactory
+from app.event_sources.registry.source_registry import SourceRegistry
 
 
 # --- Test Adapters ---
@@ -147,11 +149,11 @@ def test_event_factory_creation():
         raw_data={"message": "hello", "timestamp": "2026-01-01T00:00:00Z"},
         source_name="test",
     )
-    assert "id" in event
-    assert event["source"] == "test"
-    assert "timestamp" in event
-    assert event["data"]["message"] == "hello"
-    assert event["metadata"]["source_name"] == "test"
+    assert isinstance(event, Event)
+    assert event.event_id
+    assert event.source == "test"
+    assert event.payload["message"] == "hello"
+    assert event.metadata.properties["source_name"] == "test"
 
 
 def test_event_factory_numeric_timestamp():
@@ -160,16 +162,20 @@ def test_event_factory_numeric_timestamp():
         raw_data={"data": "x", "ts": 1704067200},
         source_name="numeric",
     )
-    assert "+" in event["timestamp"] or "Z" in event["timestamp"]
+    assert event.timestamp.year == 2024
+    assert event.timestamp.month == 1
+    assert event.timestamp.day == 1
 
 
 def test_event_factory_missing_timestamp():
     factory = EventFactory()
+    before = datetime.now(timezone.utc)
     event = factory.create_event(
         raw_data={"content": "no_ts"},
         source_name="no_ts",
     )
-    assert "+" in event["timestamp"]
+    after = datetime.now(timezone.utc)
+    assert before <= event.timestamp <= after
 
 
 def test_event_factory_metadata_merger():
@@ -179,8 +185,8 @@ def test_event_factory_metadata_merger():
         source_name="meta",
         metadata={"priority": "high"},
     )
-    assert event["metadata"]["priority"] == "high"
-    assert event["metadata"]["source_name"] == "meta"
+    assert event.metadata.properties["priority"] == "high"
+    assert event.metadata.properties["source_name"] == "meta"
 
 
 # --- Thread Safety ---
