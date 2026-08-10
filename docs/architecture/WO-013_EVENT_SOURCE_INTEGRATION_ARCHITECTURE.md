@@ -213,10 +213,36 @@ Forbidden:
 
 ### 6.3 Semantics
 
-- `start()`: STOPPED → STARTING → RUNNING. Idempotent. Refuses to start while STOPPING.
-- `stop()`: RUNNING/DEGRADED → STOPPING → STOPPED. Idempotent. Joins the runtime thread so no background thread remains.
-- `restart()`: manual, allowed only from FAILED.
-- All transitions are thread-safe (guarded by RLock).
+- `start()`: STOPPED → STARTING → RUNNING. Idempotent — a no-op while STARTING, RUNNING, or DEGRADED. Refuses to start while STOPPING. While FAILED, `start()` raises; manual recovery uses `restart()`.
+- `stop()`: RUNNING/DEGRADED → STOPPING → STOPPED. Idempotent. Joins the runtime thread so no background thread remains. Legal from STARTING/FAILED/STOPPING too (via the transition table, never by force assignment).
+- `restart()`: manual, allowed only from FAILED. Resets the restart budget.
+- All transitions are thread-safe (guarded by RLock) and go through the authoritative transition table — the state machine is never bypassed by forced assignment.
+
+### 6.4 Read Failure vs Runtime Failure (corrected)
+
+The runtime strictly distinguishes two failure classes:
+
+**Recoverable read failure** — `adapter.read_events()` raises:
+
+```
+RUNNING → DEGRADED
+log error
+retry polling in the SAME runtime thread
+does NOT consume the restart budget
+does NOT force FAILED
+on a later successful read → DEGRADED → RUNNING
+```
+
+A read failure never terminates the runtime and never permanently exhausts the restart budget.
+
+**Runtime-level failure** — `adapter.start()` raises, or an unexpected exception escapes the polling loop:
+
+```
+RUNNING/DEGRADED → FAILED
+consume ONE restart-budget unit
+if budget remains → FAILED → STARTING → create a NEW runtime thread
+if budget exhausted → remain FAILED (manual recovery only)
+```
 
 ---
 
@@ -323,12 +349,26 @@ shutdown
 ### 9.3 Restart Policy (bounded)
 
 - Finite budget (`max_restarts`, default 3), finite `restart_delay`.
+- `max_restarts` = maximum number of ACTUAL automatic runtime restart attempts (each creating a new thread).
+- With `max_restarts = N`: N restarts occur before the (N+1)th runtime-level failure leaves the runtime FAILED.
 - No `while True: restart()`.
-- Counter increases on runtime-level failure, resets after a sustained healthy period.
+- Counter increases ONLY on runtime-level failure (a real restart is required). It is NEVER consumed by recoverable `read_events()` failures.
+- Resets after a sustained healthy RUNNING period, and on manual `restart()`.
 - When budget is exhausted → FAILED. No automatic infinite restart.
 - Recovery from FAILED is manual: `supervisor.restart(name)`.
 
-Important distinction: a bad event is dropped (continue), NOT a reason to restart the adapter. Auto-restart applies to runtime/poll-loop/start failures.
+Important distinction: a bad event is dropped (continue), NOT a reason to restart the adapter; a `read_events()` error degrades (DEGRADED) and retries in the same thread. Auto-restart (new thread) applies ONLY to runtime-level failures (start failure / poll-loop crash).
+
+### 9.4 Threading Model
+
+- **One dedicated thread per `AdapterRuntime`.** One runtime == one active polling thread. No asyncio, no shared worker pool, no global executor in WO-013-003.
+- The `AdapterSupervisor` owns multiple runtimes, each with its own thread.
+- The `SourceRegistry` is a registration catalog only — it does NOT spawn polling threads.
+- A runtime-level restart creates a **brand-new `threading.Thread` object**; it is not a same-thread `continue` or a mere counter increment.
+- During a restart the old thread terminates before the new thread begins normal operation — the old thread never calls `adapter.stop()` after handing off to a restarted thread, so there is no old-thread-cleanup / new-thread-startup race on the adapter.
+- `stop()` performs a `join(timeout=...)` and guarantees no active runtime thread remains after a successful stop within the timeout.
+- There is never more than one active polling thread for the same adapter. Repeated `start()` calls while active are no-ops and do not create extra threads.
+- Sibling runtimes are isolated: one adapter's thread/failure does not affect another's.
 
 ---
 
@@ -473,6 +513,7 @@ WO-012 does NOT depend on WO-013.
 |---------|------|--------|---------|
 | 1.0 | 2026-08-07 | Chief Systems Architect | Initial approved architecture |
 | 1.1 | 2026-08-10 | Chief Systems Architect | Aligned to merged implementation (WO-013-001/002/003); removed RawEvent/dict-health/collect_events dual contract; documented Runtime & Supervisor |
+| 1.2 | 2026-08-10 | Chief Systems Architect | Corrected per independent audit (B2/B3/B4/M1): lifecycle state machine authoritative (no forced assignment); read_events failure -> DEGRADED without consuming restart budget or forcing FAILED; real new-thread runtime auto-restart within bounded budget; start() while DEGRADED is a no-op; documented Threading Model |
 
 ---
 

@@ -20,12 +20,26 @@ about Signal, MQTT, Telegram, Radio, REST, ATAK or any concrete source.
 Threading model: one AdapterRuntime == one dedicated thread. No asyncio,
 no shared worker pool, no global executor.
 
-Failure isolation:
-    - a single malformed event is dropped and processing continues
-    - a single bad event does NOT restart the adapter
-    - runtime-level failures (start/poll-loop) drive bounded auto-restart
-    - when the restart budget is exhausted the runtime -> FAILED (no
-      automatic infinite restart; recovery is manual via supervisor.restart)
+Failure model (corrected per independent audit B2/B3/B4/M1):
+
+  read_events() failure (recoverable source/read failure):
+      RUNNING -> DEGRADED
+      log error
+      retry in the SAME runtime thread
+      does NOT consume the restart budget
+      does NOT force FAILED
+      on a later successful read -> DEGRADED -> RUNNING
+
+  runtime-level failure (adapter.start() failure, or an unexpected
+  exception escaping the polling loop):
+      RUNNING/DEGRADED -> FAILED
+      consume ONE restart-budget unit
+      if budget remains -> FAILED -> STARTING -> create a NEW thread
+      if budget exhausted -> remain FAILED (manual recovery via
+      supervisor.restart(name))
+
+The lifecycle state machine is authoritative: _set_state() never
+force-assigns an illegal state (B2). No fallback path bypasses it.
 """
 
 from __future__ import annotations
@@ -94,10 +108,16 @@ class AdapterRuntime:
         """Start the runtime.
 
         Transitions STOPPED -> STARTING -> RUNNING.
-        Idempotent: starting an already-running runtime is a no-op.
+        Idempotent for already-active states (STARTING/RUNNING/DEGRADED are
+        no-ops). FAILED must be recovered via restart(), not start(). Does
+        not start a runtime that is currently stopping.
         """
         with self._lock:
-            if self._state in (AdapterState.STARTING, AdapterState.RUNNING):
+            if self._state in (
+                AdapterState.STARTING,
+                AdapterState.RUNNING,
+                AdapterState.DEGRADED,
+            ):
                 return
             if self._state == AdapterState.STOPPING:
                 logger.warning(
@@ -105,23 +125,23 @@ class AdapterRuntime:
                     self._name,
                 )
                 return
-            # FAILED and STOPPED both pass through STARTING on (re)start
+            if self._state == AdapterState.FAILED:
+                raise LifecycleTransitionError(
+                    f"Runtime '{self._name}' is FAILED; "
+                    "use restart() for manual recovery"
+                )
+            # STOPPED -> STARTING
             self._set_state(AdapterState.STARTING)
             self._restart_policy.reset()
             self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._run_loop,
-                name=f"adapter-runtime-{self._name}",
-                daemon=True,
-            )
-            self._thread.start()
+            self._spawn_thread()
 
     def stop(self) -> None:
         """Stop the runtime.
 
         Transitions RUNNING/DEGRADED -> STOPPING -> STOPPED.
         Idempotent and thread-safe. Always joins the runtime thread so no
-        background thread is left behind.
+        background thread is left behind. Never force-assigns state.
         """
         thread: threading.Thread | None = None
         with self._lock:
@@ -146,12 +166,18 @@ class AdapterRuntime:
             except Exception as e:  # pragma: no cover - defensive
                 logger.error("Runtime '%s' adapter stop error: %s", self._name, e)
             self._thread = None
+            # Reach STOPPED through a legal path regardless of the state the
+            # thread left behind (STARTING -> STOPPED; RUNNING/DEGRADED ->
+            # STOPPING -> STOPPED; STOPPING -> STOPPED; FAILED -> STOPPED).
+            if self._state in (AdapterState.RUNNING, AdapterState.DEGRADED):
+                self._set_state(AdapterState.STOPPING)
             self._set_state(AdapterState.STOPPED)
 
     def restart(self) -> None:
         """Manual restart of a FAILED runtime.
 
-        Transitions FAILED -> STARTING -> RUNNING.
+        Transitions FAILED -> STARTING -> RUNNING (new thread). Manual
+        recovery resets the restart budget.
         """
         with self._lock:
             if self._state != AdapterState.FAILED:
@@ -162,12 +188,7 @@ class AdapterRuntime:
             self._restart_policy.reset()
             self._set_state(AdapterState.STARTING)
             self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._run_loop,
-                name=f"adapter-runtime-{self._name}",
-                daemon=True,
-            )
-            self._thread.start()
+            self._spawn_thread()
 
     # --- Introspection ---
 
@@ -201,37 +222,57 @@ class AdapterRuntime:
     # --- Internal ---
 
     def _set_state(self, target: AdapterState) -> None:
-        """Set state with transition validation."""
-        try:
-            self._state = transition(self._state, target)
-        except LifecycleTransitionError:
-            # Allow forced cleanup transitions during shutdown
-            logger.warning(
-                "Runtime '%s' forced state %s -> %s",
-                self._name,
-                self._state,
-                target,
-            )
-            self._state = target
+        """Set state with transition validation.
+
+        The lifecycle state machine is authoritative. If the transition is
+        illegal, LifecycleTransitionError propagates — the state is NEVER
+        force-assigned (audit B2).
+        """
+        self._state = transition(self._state, target)
+
+    def _spawn_thread(self) -> None:
+        """Create and start a brand-new runtime thread."""
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name=f"adapter-runtime-{self._name}",
+            daemon=True,
+        )
+        self._thread.start()
 
     def _run_loop(self) -> None:
         """Main polling loop. Runs on the dedicated runtime thread."""
-        logger.info("Runtime '%s' starting adapter", self._name)
+        restarted = False
         try:
-            self._adapter.start()
-        except Exception as e:
-            self._record_failure(f"adapter.start failed: {e}")
-            return
+            try:
+                self._adapter.start()
+            except Exception as e:
+                restarted = self._handle_runtime_failure(f"adapter.start failed: {e}")
+                return
 
-        with self._lock:
-            if self._state == AdapterState.STARTING:
-                self._set_state(AdapterState.RUNNING)
-            self._last_success_at = time.time()
+            with self._lock:
+                if self._state == AdapterState.STARTING:
+                    self._set_state(AdapterState.RUNNING)
+                self._last_success_at = time.time()
 
-        try:
-            self._poll_forever()
+            try:
+                self._poll_forever()
+            except Exception as e:
+                # An unexpected exception escaping the polling loop is a
+                # runtime-level failure -> bounded auto-restart (audit B4).
+                restarted = self._handle_runtime_failure(
+                    f"runtime loop crashed: {e}"
+                )
         finally:
-            self._adapter.stop()
+            # Only stop the adapter when we are NOT handing off to a newly
+            # spawned restart thread (avoids the old-thread stop racing the
+            # new-thread start).
+            if not restarted:
+                try:
+                    self._adapter.stop()
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.error(
+                        "Runtime '%s' adapter stop error: %s", self._name, e
+                    )
 
     def _poll_forever(self) -> None:
         """Read events and forward them until stop is signalled."""
@@ -239,13 +280,11 @@ class AdapterRuntime:
             try:
                 raw_events = self._adapter.read_events()
             except Exception as e:
+                # Recoverable read failure (audit B3): DEGRADED, log, retry in
+                # the SAME thread. Does NOT consume the restart budget and does
+                # NOT force FAILED.
                 self._record_error(f"read_events failed: {e}")
-                self._restart_policy.record_failure()
                 self._mark_degraded()
-                if self._restart_policy.exhausted:
-                    self._record_failure(f"restart budget exhausted: {e}")
-                    return
-                # sleep then continue polling (DEGRADED)
                 self._restart_policy.wait_delay()
                 continue
 
@@ -303,10 +342,36 @@ class AdapterRuntime:
         with self._lock:
             self._last_error = message
 
-    def _record_failure(self, message: str) -> None:
-        """Record a runtime-level failure. Drives bounded restart."""
-        self._restarts += 1
+    def _handle_runtime_failure(self, message: str) -> bool:
+        """Handle a runtime-level failure.
+
+        Transitions to FAILED. If restart budget remains, performs a REAL
+        automatic restart by creating a brand-new runtime thread; otherwise
+        the runtime stays FAILED (manual recovery only).
+
+        Returns:
+            True if a new restart thread was spawned, False if the runtime
+            stayed FAILED (budget exhausted or shutdown in progress).
+        """
         with self._lock:
             self._last_error = message
             self._set_state(AdapterState.FAILED)
-        logger.error("Runtime '%s' FAILED: %s", self._name, message)
+
+        if self._restart_policy.exhausted or self._stop_event.is_set():
+            logger.error("Runtime '%s' FAILED: %s", self._name, message)
+            return False
+
+        # Consume one budget unit for THIS actual restart (off-by-one safe:
+        # with max_restarts=N, N restarts occur before the (N+1)th failure).
+        self._restart_policy.record_failure()
+        with self._lock:
+            self._restarts += 1
+            self._set_state(AdapterState.STARTING)
+            self._spawn_thread()
+        logger.warning(
+            "Runtime '%s' auto-restarting (attempt %d): %s",
+            self._name,
+            self._restart_policy.restart_count,
+            message,
+        )
+        return True
