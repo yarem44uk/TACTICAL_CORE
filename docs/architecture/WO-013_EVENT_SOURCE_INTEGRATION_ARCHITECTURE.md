@@ -14,6 +14,7 @@ The layer provides:
 - Protocol-agnostic event ingestion
 - Standardized adapter lifecycle management
 - Canonical event transformation from raw source data
+- Adapter runtime execution and supervision
 - Integration with WO-012 Event Processing Pipeline
 
 ---
@@ -23,7 +24,7 @@ The layer provides:
 ```
 WO-013 (Event Ingestion Layer)          WO-012 (Event Processing Layer)
 ─────────────────────────               ─────────────────────────────
-                                       
+
 Raw Data        → Source Adapter        │
            → Event Factory              │
            → Canonical Event ────────────┼──→ Pipeline
@@ -38,7 +39,7 @@ Raw Data        → Source Adapter        │
 
 **WO-012 = Processing.** Responsible for filtering, dispatching, persisting, and broadcasting events that have already been normalized.
 
-Boundary: WO-013 delivers a `CanonicalEvent` to the WO-012 `IEventPipeline`. No back-flow.
+Boundary: WO-013 delivers a canonical `Event` to the WO-012 `IEventPipeline`. No back-flow.
 
 ---
 
@@ -53,34 +54,28 @@ Boundary: WO-013 delivers a `CanonicalEvent` to the WO-012 `IEventPipeline`. No 
      ▼
 ┌─────────────────────────────────────────────────┐
 │            SOURCE ADAPTER LAYER                  │
-│                                                  │
 │  ┌──────────────┐  ┌──────────────┐             │
 │  │ Adapter #1   │  │ Adapter #2   │  ...        │
 │  │ (IEventSource│  │ (IEventSource│             │
 │  │  Adapter)    │  │  Adapter)    │             │
 │  └──────┬───────┘  └──────┬───────┘             │
-│         │                 │                      │
-│         ▼                 ▼                      │
-│  ┌──────────────────────────────────┐            │
-│  │       Source Registry            │            │
-│  │  - Adapter discovery             │            │
-│  │  - Lifecycle management          │            │
-│  │  - Health monitoring             │            │
-│  └────────────┬─────────────────────┘            │
-└───────────────┼──────────────────────────────────┘
-                │ RawEvent (source, raw_data, ts)
-                ▼
+└─────────┼──────────────────┼─────────────────────┘
+          │                  │
+          ▼                  ▼
 ┌─────────────────────────────────────────────────┐
-│              EVENT FACTORY                       │
-│                                                  │
-│  RawEvent → CanonicalEvent                       │
-│  - timestamp normalization                       │
-│  - source identification                         │
-│  - metadata enrichment                           │
-│  - schema validation                             │
-└───────────────┬──────────────────────────────────┘
-                │ CanonicalEvent
-                ▼
+│          Source Registry (catalog)               │
+│  register / get / list / remove / start_all /    │
+│  stop_all / count                                │
+└─────────────────────┬───────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────┐
+│      AdapterSupervisor (runtime orchestration)   │
+│  one AdapterRuntime per adapter                  │
+│  poll loop / restart / health aggregation        │
+└─────────────────────┬───────────────────────────┘
+                      │ canonical Event (WO-012)
+                      ▼
 ┌─────────────────────────────────────────────────┐
 │          WO-012 Event Pipeline                   │
 │  (Filter → Dispatcher → EventBus → Repository)   │
@@ -104,233 +99,285 @@ WO-013 knows nothing about Filters, Dispatcher, Repository, or EventBus internal
 ### 4.2 Dependency Direction
 
 ```
-Core Event Model (shared)
-    ↑
-WO-012 Pipeline
-    ↑
-WO-013 Adapters
+Source Adapter
+      ↓
+Adapter Runtime
+      ↓
+Event Factory
+      ↓
+Event Pipeline
+      ↓
+Event Dispatcher / Service / Repository / Bus
 ```
 
-All adapters depend on the shared Canonical Event model, never on each other.
+Core (event/, pipeline, dispatcher, service, repository, bus) never imports concrete source adapters. The runtime depends only on interfaces: `IEventSourceAdapter`, `IEventFactory`, `IEventPipeline`.
 
 ### 4.3 Plugin Model
 
 Each external source is implemented as an independent adapter. Adapters are:
-- Discovered via the Source Registry
-- Loaded on demand
+- Registered via the Source Registry (registration catalog)
+- Executed by the Adapter Supervisor (one runtime thread per adapter)
 - Isolated from each other
-- Replaced without core modification
+- Added or replaced without core modification
+
+A new adapter is added without changing core by implementing `IEventSourceAdapter` and registering it. Runtime and supervisor operate through interfaces only.
 
 ### 4.4 Lifecycle Management
 
-Each adapter manages its own connection state:
-- `start()` — initialize connection, begin reading
-- `stop()` — graceful shutdown, flush pending data
-- `health()` — connection status, last read timestamp
+Each adapter exposes `start()`, `stop()`, `health()`, `read_events()`, `source_name()`.
 
-The Source Registry coordinates lifecycle across all adapters.
+The `AdapterRuntime` owns exactly one adapter and drives it through an explicit lifecycle state machine (see section 6). The `AdapterSupervisor` orchestrates N runtimes.
 
 ### 4.5 Failure Isolation
 
 A single adapter failure must not propagate:
-- Adapter exceptions are caught at the registry boundary
-- Failed adapters are marked unhealthy, not restarted automatically
+- Exceptions from one adapter are caught at the runtime boundary
+- A malformed event is dropped; processing continues
+- A single bad event does not restart the adapter
+- Runtime-level failures drive bounded auto-restart
 - Other adapters continue operating independently
-- Canonical Event delivery is unaffected by adapter state
 
-### 4.6 Backpressure
+### 4.6 Backpressure (future WO)
 
-When WO-012 Pipeline cannot accept events:
-- Adapters throttle their read rate
-- Source Registry enforces per-adapter rate limits
-- No unbounded buffers in the pipeline
-- Events are dropped with audit logging, not queued indefinitely
+Backpressure is NOT implemented in WO-013-001/002/003. When WO-012 Pipeline cannot accept events, the only current behaviour is per-event drop with logging. Rate limiting, buffers, and persistent queues are a separate future Work Order.
 
 ---
 
 ## 5. Interfaces
 
-### 5.1 IEventSourceAdapter
+### 5.1 IEventSourceAdapter (merged contract)
 
 ```python
-class IEventSourceAdapter(Protocol):
-    """
-    Contract for external source adapters.
-    
-    Each adapter implements this interface to provide
-    raw event data to the Event Factory.
-    """
-    
-    def start(self) -> None:
-        """
-        Initialize the adapter connection and begin reading.
-        Called by Source Registry during startup.
-        Must complete within connection timeout.
-        """
-        ...
-    
-    def stop(self) -> None:
-        """
-        Gracefully shut down the adapter.
-        Flush pending data, close connections.
-        Called by Source Registry during shutdown.
-        """
-        ...
-    
-    def health(self) -> dict:
-        """
-        Return adapter health status.
-        
-        Returns:
-            dict with keys:
-            - status: "healthy" | "degraded" | "unhealthy"
-            - last_read: datetime | None
-            - connection_state: str
-            - error_count: int
-        """
-        ...
-    
-    def read_events(self) -> list[RawEvent]:
-        """
-        Read available events from the source.
-        Non-blocking — returns immediately with available data.
-        Returns empty list if no events available.
-        
-        Returns:
-            list of RawEvent objects
-        """
-        ...
-    
-    def source_name(self) -> str:
-        """
-        Return unique identifier for this source.
-        Used for correlation and audit logging.
-        
-        Returns:
-            str — source identifier (e.g., "telegram-channel-1", "mqtt-broker-a")
-        """
-        ...
+class IEventSourceAdapter(ABC):
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def health(self) -> bool: ...
+    def read_events(self) -> list[dict[str, Any]]: ...
+    def source_name(self) -> str: ...
 ```
 
-### 5.2 RawEvent
+- `health()` returns a plain `bool` (running/operational or not).
+- `read_events()` returns a list of raw event dictionaries (protocol-specific), which the EventFactory normalizes into canonical Events.
+
+### 5.2 IEventFactory (merged contract)
 
 ```python
-@dataclass
-class RawEvent:
-    """
-    Raw event from an external source.
-    Contains unprocessed data before canonical transformation.
-    """
-    source: str
-    raw_data: dict
-    received_at: datetime
+class IEventFactory(ABC):
+    def create_event(
+        self,
+        raw_data: dict[str, Any],
+        source_name: str,
+        event_type: EventType | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Event: ...
 ```
 
-### 5.3 CanonicalEvent (shared with WO-012)
+Returns a real WO-012 `Event` instance (frozen dataclass), not a dictionary.
 
-```python
-@dataclass
-class CanonicalEvent:
-    """
-    Normalized event accepted by WO-012 Pipeline.
-    All external sources produce this format.
-    """
-    event_id: str
-    event_type: str
-    source: str
-    timestamp: datetime
-    correlation_id: str
-    metadata: dict
-    payload: dict
-```
+### 5.3 Canonical Event (shared with WO-012)
+
+The canonical event is the WO-012 `Event` model (`app.event.event.Event`). There is no separate `CanonicalEvent` class and no `RawEvent` class. Raw source data is a plain `dict`; it becomes a canonical `Event` via `EventFactory.create_event()`.
 
 ---
 
-## 6. Source Registry
+## 6. Adapter Runtime Lifecycle
+
+The `AdapterRuntime` (one adapter) uses an explicit state machine.
+
+### 6.1 States
+
+```
+STOPPED
+STARTING
+RUNNING
+DEGRADED
+STOPPING
+FAILED
+```
+
+There is no UNKNOWN state. Initial state is STOPPED.
+
+### 6.2 Transitions
+
+```
+STOPPED → STARTING → RUNNING
+RUNNING ⇄ DEGRADED
+RUNNING/DEGRADED → STOPPING → STOPPED
+RUNNING/DEGRADED → FAILED
+FAILED → STARTING   (manual recovery only)
+```
+
+Forbidden:
+- `FAILED → RUNNING` (must pass through STARTING)
+- `STOPPED → RUNNING` (must pass through STARTING)
+
+### 6.3 Semantics
+
+- `start()`: STOPPED → STARTING → RUNNING. Idempotent. Refuses to start while STOPPING.
+- `stop()`: RUNNING/DEGRADED → STOPPING → STOPPED. Idempotent. Joins the runtime thread so no background thread remains.
+- `restart()`: manual, allowed only from FAILED.
+- All transitions are thread-safe (guarded by RLock).
+
+---
+
+## 7. Data Flow
+
+```
+adapter.read_events()
+        ↓
+raw dict
+        ↓
+IEventFactory.create_event(...)
+        ↓
+canonical Event
+        ↓
+IEventPipeline.process(event)
+```
+
+Per-event error isolation:
+
+```python
+try:
+    event = factory.create_event(...)
+    pipeline.process(event)
+except factory/pipeline error:
+    log
+    drop event
+    continue
+```
+
+A single bad event never stops the runtime.
+
+---
+
+## 8. Source Registry (merged contract)
 
 ### Purpose
 
-Centralized management of all active source adapters.
+`SourceRegistry` is the **registration catalog** for source adapters. It does NOT run polling loops.
 
 ### Responsibilities
 
-1. **Adapter Discovery** — register new adapters by class or factory function
-2. **Lifecycle Coordination** — start/stop all adapters in sequence
-3. **Health Monitoring** — poll health() on all adapters, report status
-4. **Event Aggregation** — collect events from all adapters, forward to Event Factory
-5. **Rate Limiting** — enforce per-adapter throughput limits
-6. **Failure Handling** — isolate failed adapters, log errors, continue operation
-
-### Design
-
-```python
-class SourceRegistry:
-    def register(adapter: IEventSourceAdapter) -> None: ...
-    def unregister(source_name: str) -> None: ...
-    def start_all() -> None: ...
-    def stop_all() -> None: ...
-    def get_health() -> dict: ...
-    def collect_events() -> list[RawEvent]: ...
 ```
+register(adapter)
+unregister(name)
+get(name)
+list_sources()
+start_all()
+stop_all()
+count()
+```
+
+- `start_all()`/`stop_all()` drive adapter lifecycle start/stop with failure isolation (one adapter failure does not stop others).
+- The registry does NOT implement `collect_events()` and does NOT perform event aggregation.
+
+### Boundary with AdapterSupervisor
+
+```
+SourceRegistry.start_all()  = adapter lifecycle start (catalog)
+AdapterSupervisor           = runtime/thread/poll-loop/restart orchestration
+```
+
+The supervisor may USE the registry as a source of adapters but does not replace it. No double-start: the registry starts adapters, the supervisor starts runtime threads.
 
 ---
 
-## 7. Event Factory
+## 9. Adapter Runtime & Supervisor
 
-### Purpose
+### 9.1 AdapterRuntime
 
-Transform RawEvent from adapters into CanonicalEvent for the WO-012 Pipeline.
+Owns exactly ONE adapter. Collaborators injected:
+- `IEventSourceAdapter`
+- `IEventFactory`
+- `IEventPipeline`
 
-### Transformation Rules
-
-1. **Timestamp Normalization** — all timestamps converted to UTC ISO 8601
-2. **Source Identification** — source field set from adapter source_name()
-3. **Metadata Handling** — adapter-specific metadata preserved in metadata dict
-4. **Payload Extraction** — protocol-specific fields extracted into payload dict
-5. **No Protocol-Specific Fields** — canonical event contains no references to HTTP, MQTT, Signal, etc.
-
-### Design
+One runtime = one dedicated thread (no asyncio, no shared worker pool, no global executor). Provides a structured health snapshot:
 
 ```python
-class EventFactory:
-    def create(raw: RawEvent) -> CanonicalEvent: ...
+{
+    "name": ...,
+    "state": ...,
+    "healthy": ...,
+    "restarts": ...,
+    "restart_budget_remaining": ...,
+    "last_error": ...,
+    "last_success_at": ...,
+    "events_processed": ...,
+}
 ```
 
-### Rules
+`IEventSourceAdapter.health() -> bool` is unchanged.
 
-- Event ID generation uses UUID4
-- Correlation ID inherited from source or generated
-- Schema validation against CanonicalEvent structure
-- Invalid events logged and dropped, never passed to pipeline
+### 9.2 AdapterSupervisor
+
+Owns N runtimes. Responsibilities:
+```
+create/attach runtime
+start_all
+stop_all
+restart(name)
+get_health()  (aggregate)
+shutdown
+```
+
+### 9.3 Restart Policy (bounded)
+
+- Finite budget (`max_restarts`, default 3), finite `restart_delay`.
+- No `while True: restart()`.
+- Counter increases on runtime-level failure, resets after a sustained healthy period.
+- When budget is exhausted → FAILED. No automatic infinite restart.
+- Recovery from FAILED is manual: `supervisor.restart(name)`.
+
+Important distinction: a bad event is dropped (continue), NOT a reason to restart the adapter. Auto-restart applies to runtime/poll-loop/start failures.
 
 ---
 
-## 8. WO-013-001 Scope
+## 10. WO-013-001 Scope (implemented)
 
-### INCLUDED (WO-013-001)
+### INCLUDED
 
-- `IEventSourceAdapter` interface definition
-- `SourceRegistry` implementation
-- `EventFactory` implementation
-- `RawEvent` data model
-- Adapter lifecycle management (start/stop/health)
-- Unit tests for all components
-- Integration test with WO-012 Pipeline interface
+- `IEventSourceAdapter` interface
+- `BaseEventSourceAdapter`
+- `SourceRegistry`
+- `IEventFactory` + `EventFactory`
+- Unit tests
 
 ### EXCLUDED (future Work Orders)
 
-- Signal adapter implementation
-- MQTT adapter implementation
-- Radio/ATAC adapter implementation
+- Signal adapter
+- MQTT adapter
+- Radio/ATAK adapter
 - MPU5 integration
 - Any protocol-specific adapter code
 - Configuration management for sources
 
-WO-013-001 delivers the framework. Protocol adapters follow as separate Work Orders.
+---
+
+## 11. WO-013-002 Scope (implemented)
+
+- `EventFactory` integrated with WO-012 canonical `Event` model
+- `IEventFactory.create_event(...) -> Event`
+- Integration tests
 
 ---
 
-## 9. Acceptance Criteria
+## 12. WO-013-003 Scope (implemented)
+
+- `AdapterRuntime` (one adapter, one thread, lifecycle state machine)
+- `AdapterSupervisor` (N runtimes orchestration)
+- Bounded restart policy
+- Health snapshots / aggregate health
+- Documentation aligned to merged implementation
+
+### NOT implemented in WO-013-003
+
+- Backpressure (queues, rate limiters, buffers)
+- Any concrete protocol adapter
+- Changes to WO-012 core
+
+---
+
+## 13. Acceptance Criteria
 
 All criteria from Architecture Constitution apply:
 
@@ -338,17 +385,19 @@ All criteria from Architecture Constitution apply:
 |----|-----------|
 | CV1 | Identity-first resolution — all entities use unique identifiers |
 | CV2 | Non-destructive operations — no deletion of active adapters at runtime |
-| CV3 | Explicit state management — UNKNOWN initial status, no implicit PENDING |
-| CV4 | Confidence validation — health scores in range [0.0, 1.0] |
+| CV3 | Explicit state management — STOPPED initial state, no UNKNOWN, no implicit PENDING |
+| CV4 | Confidence validation — health/confidence in valid range |
 | CV5 | Dependency isolation — adapters depend only on shared interfaces |
-| CV6 | Backward compatibility — CanonicalEvent schema preserved across versions |
+| CV6 | Backward compatibility — canonical Event schema preserved across versions |
 | CV7 | Audit trail — all adapter state changes logged with timestamps |
 
 ---
 
-## 10. Git Workflow
+## 14. Git Workflow
 
-**Branch:** `WO-013-001-source-adapter-framework`
+**WO-013-001 Branch:** `WO-013-001-source-adapter-framework`
+**WO-013-002 Branch:** `WO-013-002-event-factory-integration`
+**WO-013-003 Branch:** `WO-013-003-adapter-runtime-supervisor`
 
 **Flow:**
 
@@ -365,53 +414,65 @@ Merge to main
 ```
 
 **Constraints:**
-- Work only on branch `WO-013-001-source-adapter-framework`
+- Work only on the feature branch
 - No direct changes to main
 - No force push
 - No history rewrite
 - Protected files unchanged
-- Commit message: `WO-013-001: Implement Source Adapter Framework`
 
 ---
 
-## 11. File Structure
+## 15. File Structure
 
 ```
-backend/app/event_source/
+backend/app/event_sources/
   __init__.py
   interfaces/
     __init__.py
     i_event_source_adapter.py
-  models/
+    i_event_factory.py
+  adapters/
     __init__.py
-    raw_event.py
-  source_registry.py
-  event_factory.py
+    base_adapter.py
+  registry/
+    __init__.py
+    source_registry.py
+  factory/
+    __init__.py
+    event_factory.py
+  runtime/
+    __init__.py
+    adapter_runtime.py
+    adapter_supervisor.py
+    lifecycle.py
+    restart_policy.py
 
 backend/tests/
-  test_source_registry.py
-  test_event_factory.py
-  test_event_source_adapter.py
+  test_event_sources.py
+  test_event_factory_integration.py
+  test_adapter_runtime.py
+  test_adapter_supervisor.py
 ```
 
 ---
 
-## 12. Dependencies
+## 16. Dependencies
 
 WO-013 depends on:
 - WO-012 Event Pipeline interface (`IEventPipeline`)
-- Shared Canonical Event model (from WO-012)
+- WO-012 canonical `Event` model
 - No external library dependencies for framework layer
 
 WO-012 does NOT depend on WO-013.
 
 ---
 
-## 13. Document Version
+## 17. Document Version
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-08-07 | Chief Systems Architect | Initial approved architecture |
+| 1.1 | 2026-08-10 | Chief Systems Architect | Aligned to merged implementation (WO-013-001/002/003); removed RawEvent/dict-health/collect_events dual contract; documented Runtime & Supervisor |
 
 ---
 
