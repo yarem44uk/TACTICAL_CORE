@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from app.contracts.plugin import IPlugin, IPluginManager
 
+from app.event.event import Event
+
 from app.plugins.discovery.discovery import PluginCandidate, discover
 from app.plugins.hotreload.hot_reload import reload_plugin
 from app.plugins.loader.loader import (
@@ -398,6 +400,56 @@ class PluginManager(IPluginManager):
                     self._registry.update_status(plugin_id, STOPPED)
                     logger.info(f"Plugin {plugin_id} stopped via executor")
             self._executors.clear()
+
+    # ------------------------------------------------------------------
+    # Event delivery
+    # ------------------------------------------------------------------
+
+    def deliver_event(self, event: Event) -> None:
+        """
+        Deliver a canonical Event to all active (running) plugins.
+
+        The plugin layer consumes the canonical ``app.event.Event`` object.
+        Raw source dictionaries are never delivered here.
+
+        Delivery is isolated per plugin: if one plugin's ``on_event`` raises,
+        the failure is logged and delivery continues to the remaining plugins.
+
+        Only plugins in the RUNNING state receive events. Stopped, disabled,
+        failed, loaded or unloaded plugins are skipped.
+
+        This method does NOT construct Events, call EventFactory,
+        EventPipeline, EventBus, or access the database. It receives an
+        already-canonical Event and fans it out to running plugins.
+
+        Args:
+            event: The canonical Event to deliver.
+
+        Raises:
+            TypeError: If ``event`` is not a canonical ``Event`` instance.
+        """
+        if not isinstance(event, Event):
+            raise TypeError(
+                "deliver_event() requires a canonical app.event.Event "
+                f"instance, got {type(event).__name__}"
+            )
+
+        with self._lock:
+            entries = self._registry.list()
+
+        for entry in entries:
+            if entry.status != RUNNING:
+                # Only active/running plugins receive normal event delivery.
+                continue
+            try:
+                entry.instance.on_event(event)
+            except Exception as exc:
+                logger.error(
+                    f"Plugin {entry.plugin_id} failed handling event "
+                    f"{event.event_id}: {exc}"
+                )
+                # Failure of one plugin must not abort delivery to others.
+                continue
 
     # ------------------------------------------------------------------
     # Health reporting

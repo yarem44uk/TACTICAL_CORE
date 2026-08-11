@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from app.event.event import Event
     from app.plugins.sdk.manifest import PluginManifest
     from app.plugins.sdk.context import PluginContext
 
@@ -217,6 +218,21 @@ class BasePlugin(ABC):
 
         Args:
             config: New configuration dictionary.
+        """
+        pass
+
+    def on_event(self, event: "Event") -> None:
+        """
+        Called for each canonical Event delivered to this plugin.
+
+        The plugin receives the canonical ``app.event.Event`` object.
+        Raw source dictionaries are never delivered here.
+
+        Default implementation is a no-op for backward compatibility;
+        plugins that handle events may override this method.
+
+        Args:
+            event: The canonical Event object to process.
         """
         pass
 

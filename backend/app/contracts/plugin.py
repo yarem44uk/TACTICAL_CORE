@@ -10,6 +10,8 @@ Version: 1.0
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from app.event.event import Event
+
 
 class IPlugin(ABC):
     """
@@ -62,6 +64,21 @@ class IPlugin(ABC):
 
     def on_shutdown(self) -> None:
         """Called when application shuts down. Optional."""
+        pass
+
+    def on_event(self, event: Event) -> None:
+        """
+        Called for each canonical Event delivered to this plugin.
+
+        The plugin receives the canonical ``app.event.Event`` object.
+        Raw source dictionaries are never delivered here.
+
+        Default implementation is a no-op for backward compatibility;
+        plugins that handle events may override this method.
+
+        Args:
+            event: The canonical Event object to process.
+        """
         pass
 
 
