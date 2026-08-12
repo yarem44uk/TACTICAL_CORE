@@ -80,6 +80,42 @@ def _wait_for(fn, timeout: float = 5.0, interval: float = 0.01) -> bool:
     return False
 
 
+def _wait_failed_terminal(rt, name: str, timeout: float = 15.0,
+                          interval: float = 0.01) -> None:
+    """Wait for a source's AUTHORITATIVE terminal FAILED state.
+
+    AdapterRuntime performs bounded auto-restart (WO-013-003): on a
+    runtime-level failure it transitions FAILED -> STARTING -> new thread
+    while restart budget remains, oscillating until the budget is exhausted
+    (restart_budget_remaining == 0).  Merely observing ``failed == 1`` once is
+    NOT the terminal condition — the source may be mid-oscillation and the
+    next snapshot can observe a transitional STARTING (classified INACTIVE)
+    or DEGRADED state, making the aggregate read DEGRADED instead of FAILED.
+
+    The authoritative terminal condition is: AdapterState.FAILED AND the
+    restart budget is exhausted.  We poll the supervisor's real AdapterRuntime
+    for that condition (no private-field access, no arbitrary sleep as the
+    synchronization mechanism).  On timeout we raise with the observed state
+    so the failure is diagnostic, never a silent hang.
+    """
+    deadline = time.time() + timeout
+    last_state = "unknown"
+    while time.time() < deadline:
+        rt_obj = rt.supervisor.get_runtime(name)
+        if rt_obj.state == AdapterState.FAILED:
+            budget = rt_obj.health().get("restart_budget_remaining")
+            if budget == 0:
+                return
+            last_state = f"FAILED(budget={budget})"
+        else:
+            last_state = str(rt_obj.state)
+        time.sleep(interval)
+    raise AssertionError(
+        f"source '{name}' did not reach terminal FAILED within {timeout}s; "
+        f"last observed AdapterState: {last_state}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. EMPTY RUNTIME
 # ---------------------------------------------------------------------------
@@ -184,9 +220,14 @@ def test_source_failure_is_reported_failed():
     rt.add_source(_Source("bad", fail_start=True))
     rt.start()
     try:
-        # The failing source may auto-restart a few times (bounded budget)
-        # before settling in FAILED; wait until a FAILED source is observed.
-        assert _wait_for(lambda: runtime_health(rt).failed == 1)
+        # The failing source auto-restarts (bounded budget) before settling in
+        # its terminal FAILED state.  Wait for the AUTHORITATIVE terminal
+        # condition (FAILED + restart budget exhausted) rather than sampling on
+        # the first transient FAILED observation (which can be mid-oscillation
+        # and briefly read DEGRADED).  Aggregate health is deterministic for a
+        # fixed authoritative state, so once terminal FAILED is reached the
+        # aggregate must stably report FAILED.
+        _wait_failed_terminal(rt, "bad")
         h = runtime_health(rt)
         assert h.state == RuntimeState.FAILED  # precedence: FAILED wins
         failed = [s for s in h.sources if s.name == "bad"][0]
@@ -208,7 +249,9 @@ def test_partial_startup_reports_good_running_and_bad_failed():
     rt.start()
     try:
         assert _wait_for(lambda: runtime_health(rt).running == 1)
-        assert _wait_for(lambda: runtime_health(rt).failed == 1)
+        # Wait for the bad source's authoritative terminal FAILED (budget
+        # exhausted), not a transient mid-oscillation FAILED observation.
+        _wait_failed_terminal(rt, "bad")
         h = runtime_health(rt)
         # Non-transactional AdapterSupervisor: the good source stays active.
         assert h.running == 1
