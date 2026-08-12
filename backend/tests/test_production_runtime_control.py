@@ -223,8 +223,24 @@ def test_t10_failed_source_remains_visible():
     ctl = ProductionRuntimeController(rt)
     ctl.start()
     try:
-        # a failing source is eventually reported FAILED
-        assert _wait_for(lambda: ctl.health().failed >= 1)
+        # A failing source with auto-restart enabled passes through a
+        # TRANSIENT FAILED -> STARTING (-> INACTIVE) cycle while the bounded
+        # restart budget remains.  FAILED is only terminal once that budget is
+        # exhausted.  Synchronize against the AUTHORITATIVE terminal condition
+        # (AdapterRuntime.health(): state == FAILED AND budget exhausted) rather
+        # than sampling on the first transient FAILED observation.
+        def _terminal_failed() -> bool:
+            h = ctl.runtime.supervisor.get_runtime("bad").health()
+            return (
+                h["state"] == AdapterState.FAILED.value
+                and h["restart_budget_remaining"] == 0
+            )
+
+        assert _wait_for(
+            _terminal_failed,
+            timeout=15.0,
+            interval=0.02,
+        ), "bad source did not reach terminal FAILED (budget exhausted)"
         h = ctl.health()
         bad = [s for s in h.sources if s.name == "bad"][0]
         assert bad.classification == SourceState.FAILED
