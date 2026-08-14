@@ -498,10 +498,22 @@ def test_c10_canonical_event_path_delivers_to_plugin():
 
 def test_c10b_no_direct_source_to_plugin_bypass_in_control_path():
     # The controller exposes no way to push an event into the pipeline or
-    # plugin layer directly; only start/stop/state/health are exposed.
+    # plugin layer directly; only lifecycle control operations are exposed.
+    # start_source/stop_source/restart_source are facade delegations to the
+    # canonical ProductionRuntime -> AdapterSupervisor -> AdapterRuntime path
+    # (WO-014-010) and do NOT bypass EventFactory/EventPipeline/PluginManager.
     rt = _fresh_runtime()
     ctl = ProductionRuntimeController(rt)
-    allowed = {"start", "stop", "state", "health", "runtime"}
+    allowed = {
+        "start",
+        "stop",
+        "state",
+        "health",
+        "runtime",
+        "start_source",
+        "stop_source",
+        "restart_source",
+    }
     public = {m for m in dir(ctl) if not m.startswith("_")}
     assert public <= allowed
 

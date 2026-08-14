@@ -144,6 +144,33 @@ class AdapterSupervisor:
         runtime = self._get_runtime(name)
         runtime.restart()
 
+    def start(self, name: str) -> None:
+        """Start a single named runtime, leaving all others untouched.
+
+        Delegates to the existing ``AdapterRuntime.start()``; no new runtime,
+        thread, or RestartPolicy is created here, and no other source is
+        affected.  Idempotency and lifecycle-transition semantics are owned by
+        ``AdapterRuntime.start()``.
+
+        Raises:
+            KeyError: If no runtime with the given name exists.
+        """
+        runtime = self._get_runtime(name)
+        runtime.start()
+
+    def stop(self, name: str) -> None:
+        """Stop a single named runtime, leaving all others untouched.
+
+        Delegates to the existing ``AdapterRuntime.stop()``; no new lifecycle
+        mechanism is introduced and global shutdown semantics are unchanged.
+        Only the authoritative runtime for this source is stopped.
+
+        Raises:
+            KeyError: If no runtime with the given name exists.
+        """
+        runtime = self._get_runtime(name)
+        runtime.stop()
+
     # --- Introspection ---
 
     def get_runtime(self, name: str) -> AdapterRuntime:

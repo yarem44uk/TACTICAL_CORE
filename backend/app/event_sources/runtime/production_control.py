@@ -89,6 +89,50 @@ class ProductionRuntimeController:
         """
         self._runtime.stop()
 
+    # --- Targeted per-source control (WO-014-010) -------------------------
+    #
+    # The controller remains a stateless facade.  These operations delegate
+    # straight to the authoritative ProductionRuntime -> AdapterSupervisor ->
+    # AdapterRuntime path.  The controller does NOT construct or own any
+    # runtime, supervisor, thread, timer, or RestartPolicy.
+
+    def start_source(self, name: str) -> None:
+        """Start a single named source, leaving all others untouched.
+
+        Delegates to ``ProductionRuntime.start_source(name)`` (and therefore
+        to AdapterSupervisor -> AdapterRuntime).  Exceptions (e.g. ``KeyError``
+        for an unknown source) propagate unchanged.
+
+        Args:
+            name: The source/runtime name.
+        """
+        self._runtime.start_source(name)
+
+    def stop_source(self, name: str) -> None:
+        """Stop a single named source, leaving all others untouched.
+
+        Delegates to ``ProductionRuntime.stop_source(name)`` (and therefore to
+        AdapterSupervisor -> AdapterRuntime).  Global shutdown semantics are
+        unchanged.
+
+        Args:
+            name: The source/runtime name.
+        """
+        self._runtime.stop_source(name)
+
+    def restart_source(self, name: str) -> None:
+        """Restart a single FAILED source through the existing supervisor.
+
+        Delegates to ``ProductionRuntime.restart_source(name)`` and therefore
+        to the authoritative ``AdapterSupervisor.restart(name)`` /
+        ``AdapterRuntime.restart()``.  Restart-budget semantics remain the
+        exclusive property of the existing RestartPolicy.
+
+        Args:
+            name: The source/runtime name.
+        """
+        self._runtime.restart_source(name)
+
     # --- Observation (derived / delegated, never stored) -------------------
 
     def state(self) -> RuntimeState:

@@ -137,6 +137,45 @@ class ProductionRuntime:
         self.supervisor.shutdown()
         self.started = False
 
+    # --- Targeted per-source lifecycle (WO-014-010) -----------------------
+
+    def start_source(self, name: str) -> None:
+        """Start a single named source, leaving all others untouched.
+
+        Delegates to ``AdapterSupervisor.start(name)`` and therefore to the
+        existing ``AdapterRuntime.start()``.  No new runtime, thread, or
+        RestartPolicy is created here.
+
+        Raises:
+            KeyError: If no runtime with the given name exists.
+        """
+        self.supervisor.start(name)
+
+    def stop_source(self, name: str) -> None:
+        """Stop a single named source, leaving all others untouched.
+
+        Delegates to ``AdapterSupervisor.stop(name)`` and therefore to the
+        existing ``AdapterRuntime.stop()``.  Global shutdown semantics are
+        unchanged.
+
+        Raises:
+            KeyError: If no runtime with the given name exists.
+        """
+        self.supervisor.stop(name)
+
+    def restart_source(self, name: str) -> None:
+        """Restart a single FAILED source through the existing supervisor.
+
+        Delegates to the authoritative ``AdapterSupervisor.restart(name)`` /
+        ``AdapterRuntime.restart()``.  Restart-budget semantics remain the
+        exclusive property of the existing RestartPolicy.
+
+        Raises:
+            KeyError: If no runtime with the given name exists.
+            LifecycleTransitionError: If the runtime is not in FAILED state.
+        """
+        self.supervisor.restart(name)
+
 
 def create_production_runtime(
     plugin_manager: Optional[PluginManager] = None,
