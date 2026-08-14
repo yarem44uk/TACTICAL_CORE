@@ -502,6 +502,9 @@ def test_c10b_no_direct_source_to_plugin_bypass_in_control_path():
     # start_source/stop_source/restart_source are facade delegations to the
     # canonical ProductionRuntime -> AdapterSupervisor -> AdapterRuntime path
     # (WO-014-010) and do NOT bypass EventFactory/EventPipeline/PluginManager.
+    # source_snapshot is an authorized read-only observational facade (WO-014-011,
+    # Architect-authorized C10b contract evolution); it never mutates lifecycle,
+    # health, restart policy, registration, or thread state.
     rt = _fresh_runtime()
     ctl = ProductionRuntimeController(rt)
     allowed = {
@@ -513,6 +516,7 @@ def test_c10b_no_direct_source_to_plugin_bypass_in_control_path():
         "start_source",
         "stop_source",
         "restart_source",
+        "source_snapshot",
     }
     public = {m for m in dir(ctl) if not m.startswith("_")}
     assert public <= allowed
