@@ -99,6 +99,7 @@ class AdapterRuntime:
         self._restarts: int = 0
         self._last_error: str | None = None
         self._last_success_at: float | None = None
+        self._started_at: float | None = None
         self._events_processed: int = 0
         self._consecutive_failures: int = 0
 
@@ -206,8 +207,18 @@ class AdapterRuntime:
 
         This is runtime health, distinct from IEventSourceAdapter.health()
         (which returns a plain bool and is left unchanged).
+
+        ``uptime`` is an observational projection derived from the runtime's
+        own ``_started_at`` timestamp (owned by this runtime, matching the
+        existing ``_last_success_at`` pattern).  It introduces no timer,
+        thread, scheduler, or additional lifecycle owner.
         """
         with self._lock:
+            uptime = (
+                (time.time() - self._started_at)
+                if self._started_at is not None
+                else 0.0
+            )
             return {
                 "name": self._name,
                 "state": str(self._state),
@@ -216,6 +227,8 @@ class AdapterRuntime:
                 "restart_budget_remaining": self._restart_policy.remaining,
                 "last_error": self._last_error,
                 "last_success_at": self._last_success_at,
+                "started_at": self._started_at,
+                "uptime": max(0.0, uptime),
                 "events_processed": self._events_processed,
             }
 
@@ -232,6 +245,7 @@ class AdapterRuntime:
 
     def _spawn_thread(self) -> None:
         """Create and start a brand-new runtime thread."""
+        self._started_at = time.time()
         self._thread = threading.Thread(
             target=self._run_loop,
             name=f"adapter-runtime-{self._name}",

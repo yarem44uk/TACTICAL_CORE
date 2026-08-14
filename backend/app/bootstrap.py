@@ -53,6 +53,7 @@ from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_sources.factory.event_factory import EventFactory
 from app.event_sources.interfaces.i_event_source_adapter import IEventSourceAdapter
 from app.event_sources.runtime.adapter_supervisor import AdapterSupervisor
+from app.event_sources.runtime.runtime_health import SourceSnapshot, source_snapshot
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
 
 
@@ -175,6 +176,25 @@ class ProductionRuntime:
             LifecycleTransitionError: If the runtime is not in FAILED state.
         """
         self.supervisor.restart(name)
+
+    # --- Observability (WO-014-011) ---------------------------------------
+
+    def source_snapshot(self, name: str) -> SourceSnapshot:
+        """Return the canonical read-only observability snapshot for one source.
+
+        Read-only projection composed from the authoritative
+        ``AdapterSupervisor.get_runtime(name)`` and the existing
+        ``AdapterRuntime`` state/health.  It never mutates lifecycle, restart
+        budget, or configuration, and never starts/stops/restarts the source.
+
+        Args:
+            name: The registered source name.
+
+        Raises:
+            KeyError: If no runtime with the given name exists (existing
+                supervisor lookup semantics).
+        """
+        return source_snapshot(self, name)
 
 
 def create_production_runtime(

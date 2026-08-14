@@ -112,6 +112,39 @@ class SourceStatus:
 
 
 @dataclass(frozen=True)
+class SourceSnapshot:
+    """WO-014-011 — canonical read-only observability snapshot of ONE source.
+
+    Composed from the authoritative ``AdapterRuntime`` (via ``health()``) and
+    the deterministic ``SourceState`` classification.  It is observational
+    only: it never starts/stops/restarts a source, never mutates lifecycle,
+    restart budget, or configuration, and never creates runtime objects,
+    threads, or timers.  Reuses existing runtime/health information; no
+    parallel source registry or second health model is introduced.
+    """
+
+    name: str
+    adapter_state: str  # authoritative AdapterState value
+    classification: SourceState
+    active: bool
+    healthy: bool
+    last_error: str | None
+    events_processed: int
+    restarts: int
+    restart_budget_remaining: int
+    started_at: float | None
+    uptime: float
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return (
+            f"SourceSnapshot(name={self.name!r}, "
+            f"state={self.adapter_state!r}, "
+            f"classification={self.classification.value!r}, "
+            f"healthy={self.healthy!r}, restarts={self.restarts!r})"
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeHealth:
     """Read-only aggregate operational view of the production runtime."""
 
@@ -221,4 +254,44 @@ def runtime_health(runtime: Any) -> RuntimeHealth:
         inactive=inactive,
         state=_aggregate(started, classifications),
         sources=tuple(sources),
+    )
+
+
+def source_snapshot(runtime: Any, name: str) -> SourceSnapshot:
+    """WO-014-011 — return the canonical read-only observability snapshot.
+
+    Delegates to the authoritative ``AdapterSupervisor.get_runtime(name)``
+    and composes a structured ``SourceSnapshot`` from the existing
+    ``AdapterRuntime`` state/health.  This is a pure projection: it never
+    mutates lifecycle, restart budget, or configuration, and never creates
+    runtime objects, threads, or timers.
+
+    Args:
+        runtime: A ``ProductionRuntime`` whose ``supervisor`` is used to look
+            up the named source.
+        name: The registered source name.
+
+    Raises:
+        KeyError: If no runtime with the given name exists (existing
+            supervisor lookup semantics).
+    """
+    supervisor = runtime.supervisor
+    rt: AdapterRuntime = supervisor.get_runtime(name)
+    adapter_state: AdapterState = rt.state
+    health = rt.health()
+    classification = _classify(adapter_state)
+    return SourceSnapshot(
+        name=rt.name,
+        adapter_state=str(adapter_state),
+        classification=classification,
+        active=adapter_state in (AdapterState.RUNNING, AdapterState.DEGRADED),
+        healthy=adapter_state in (AdapterState.RUNNING, AdapterState.DEGRADED),
+        last_error=health.get("last_error"),
+        events_processed=int(health.get("events_processed", 0) or 0),
+        restarts=int(health.get("restarts", 0) or 0),
+        restart_budget_remaining=int(
+            health.get("restart_budget_remaining", 0) or 0
+        ),
+        started_at=health.get("started_at"),
+        uptime=float(health.get("uptime", 0.0) or 0.0),
     )

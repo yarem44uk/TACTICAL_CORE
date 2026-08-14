@@ -51,7 +51,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .runtime_health import RuntimeHealth, RuntimeState, runtime_health
+from .runtime_health import (
+    RuntimeHealth,
+    RuntimeState,
+    SourceSnapshot,
+    runtime_health,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids runtime import cycle
     from app.bootstrap import ProductionRuntime
@@ -154,6 +159,23 @@ class ProductionRuntimeController:
         semantics are owned by that module and are never duplicated here.
         """
         return runtime_health(self._runtime)
+
+    def source_snapshot(self, name: str) -> SourceSnapshot:
+        """WO-014-011 — canonical read-only observability snapshot for one source.
+
+        Thin facade delegation to ``ProductionRuntime.source_snapshot(name)``
+        and therefore to the authoritative supervisor/runtime state.  This is
+        observational only: it never starts/stops/restarts a source and never
+        mutates lifecycle, restart budget, or configuration.
+
+        Args:
+            name: The registered source name.
+
+        Raises:
+            KeyError: If no runtime with the given name exists (existing
+                supervisor lookup semantics).
+        """
+        return self._runtime.source_snapshot(name)
 
     # --- Introspection -----------------------------------------------------
 
