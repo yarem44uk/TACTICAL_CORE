@@ -99,3 +99,83 @@ def create_event_runtime(
         plugin_manager=manager,
         plugin_dispatcher=dispatcher,
     )
+
+
+# ---------------------------------------------------------------------------
+# WO-014-017 — Canonical durable repository production composition (additive)
+# ---------------------------------------------------------------------------
+# This additive composition path wires the canonical EventService to the
+# WO-014-016 durable canonical repository behind the authoritative
+# IEventRepository seam:
+#
+#     canonical Event
+#         |
+#         v
+#     EventService(repository=IEventRepository)
+#         |
+#         v
+#     DurableCanonicalEventRepository   (WO-014-016 SQLAlchemy durable impl)
+#         |
+#         v
+#     DurableCanonicalEvent
+#         |
+#         v
+#     existing DatabaseSessionManager
+#
+# It is strictly ADDITIVE. The existing ``create_event_runtime`` composition
+# root and any legacy production default are left untouched. No second DB
+# engine, session manager, or repository interface is introduced.
+from typing import Optional
+
+from app.event_service.event_service import EventService
+from app.event_repository.durable.sqlalchemy_event_repository import (
+    SQLAlchemyEventRepository as DurableCanonicalEventRepository,
+)
+from app.event_repository.interfaces.i_event_repository import IEventRepository
+
+
+@dataclass(frozen=True)
+class DurableEventRuntime:
+    """A wired canonical durable event-runtime handle.
+
+    Exposes the canonical EventService backed by the durable canonical
+    repository. ``runtime.event_service.save_event(event)`` persists the
+    canonical ``Event`` durably; ``get_event`` / ``get_events`` return
+    canonical ``Event`` objects.
+    """
+
+    event_service: EventService
+    repository: IEventRepository
+
+
+def durable_build_default_components(
+    repository: Optional[IEventRepository] = None,
+) -> DurableEventRuntime:
+    """Assemble the canonical durable EventService composition.
+
+    Constructs an ``EventService`` backed by a ``DurableCanonicalEventRepository``
+    (the WO-014-016 SQLAlchemy durable implementation of ``IEventRepository``)
+    by default. Callers may inject an alternative ``IEventRepository`` for
+    testing.
+
+    Args:
+        repository: Optional ``IEventRepository`` to compose. Defaults to a
+            new ``DurableCanonicalEventRepository`` (which reuses the existing
+            global ``DatabaseSessionManager`` via ``get_session_manager()``).
+
+    Returns:
+        A ``DurableEventRuntime`` handle exposing the wired EventService and
+        its repository. The durable repository's table is initialised via the
+        existing database infrastructure.
+    """
+    if repository is None:
+        repository = DurableCanonicalEventRepository()
+        repository.initialize()
+
+    event_service = EventService(repository=repository)
+
+    return DurableEventRuntime(
+        event_service=event_service,
+        repository=repository,
+    )
+
