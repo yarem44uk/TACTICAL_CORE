@@ -91,6 +91,13 @@ def create_event_runtime(
     Events. Callers may inject an alternative ``IEventRepository`` for
     testing; by default the durable canonical repository is used.
 
+    WO-014-020: the same durable repository is also wired into the
+    ``EventPipeline`` persistence seam via ``pipeline.set_repository(...)``,
+    so ``pipeline.process(event)`` durably persists each canonical Event
+    through ``IEventRepository`` -> ``DurableCanonicalEventRepository`` ->
+    the existing ``DatabaseSessionManager``. The pipeline and the
+    ``EventService`` share the same single repository instance.
+
     Args:
         plugin_manager: Optional ``PluginManager`` to compose.  Defaults to
             the global singleton returned by ``get_plugin_manager()``.
@@ -116,6 +123,7 @@ def create_event_runtime(
     if repository is None:
         repository = DurableCanonicalEventRepository()
     event_service = EventService(repository=repository)
+    pipeline.set_repository(repository)
 
     return EventRuntime(
         pipeline=pipeline,

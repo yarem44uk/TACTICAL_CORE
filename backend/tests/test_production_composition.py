@@ -32,13 +32,15 @@ import sys
 
 import pytest
 
+import app.database.session as session_mod
+from app.composition import EventRuntime, create_event_runtime
+from app.database.session import configure_session_manager
 from app.event.event import Event
 from app.contracts.plugin import IPlugin
 from app.plugins.sdk.base import BasePlugin
 from app.plugins.registry.registry import LOADED, RUNNING, STOPPED
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_dispatcher.plugin_dispatcher import PluginDispatcher
-from app.composition import EventRuntime, create_event_runtime
 
 
 class _RecordingPlugin(BasePlugin):
@@ -98,8 +100,30 @@ def _register_running(manager, plugin) -> None:
     manager._registry.update_status(plugin.plugin_id, RUNNING)
 
 
+@pytest.fixture()
+def global_session_manager():
+    """Configure the GLOBAL DatabaseSessionManager to an isolated in-memory
+    SQLite database (exactly as the production app does at startup), create
+    the durable canonical table, and reset afterwards so nothing leaks.
+
+    WO-014-020: production composition now wires the durable canonical
+    repository into the EventPipeline persistence seam, so
+    ``pipeline.process(event)`` durably persists. These tests configure the
+    existing global session manager (no second DB owner) and initialize the
+    durable table so the wired pipeline persists exactly as in production.
+    """
+    from app.event_repository.durable.sqlalchemy_event_repository import (
+        SQLAlchemyEventRepository,
+    )
+
+    manager = configure_session_manager("sqlite:///:memory:")
+    SQLAlchemyEventRepository().initialize()
+    yield manager
+    session_mod._session_manager = None
+
+
 # T1 — Production composition exists
-def test_production_composition_creates_wired_runtime():
+def test_production_composition_creates_wired_runtime(global_session_manager):
     runtime = create_event_runtime()
 
     assert isinstance(runtime, EventRuntime)
@@ -108,7 +132,7 @@ def test_production_composition_creates_wired_runtime():
 
 
 # T2 — Dispatcher attached to the pipeline by production composition
-def test_production_composition_attaches_dispatcher():
+def test_production_composition_attaches_dispatcher(global_session_manager):
     runtime = create_event_runtime()
     # The dispatcher must be reachable through the pipeline's public
     # dispatcher slot after production composition.
@@ -116,7 +140,7 @@ def test_production_composition_attaches_dispatcher():
 
 
 # T3 — Canonical Event delivery reaches the plugin layer
-def test_canonical_event_reaches_running_plugin():
+def test_canonical_event_reaches_running_plugin(global_session_manager):
     runtime = create_event_runtime()
     plugin = _RecordingPlugin("c-1")
     _register_running(runtime.plugin_manager, plugin)
@@ -130,7 +154,7 @@ def test_canonical_event_reaches_running_plugin():
 
 
 # T4 — Event identity preserved through the full composition
-def test_event_identity_is_preserved():
+def test_event_identity_is_preserved(global_session_manager):
     runtime = create_event_runtime()
     plugin = _RecordingPlugin("c-ident")
     _register_running(runtime.plugin_manager, plugin)
@@ -142,7 +166,7 @@ def test_event_identity_is_preserved():
 
 
 # T5 — RUNNING lifecycle filtering through production composition
-def test_only_running_plugins_receive_event():
+def test_only_running_plugins_receive_event(global_session_manager):
     runtime = create_event_runtime()
 
     running = _RecordingPlugin("c-running")
@@ -166,7 +190,7 @@ def test_only_running_plugins_receive_event():
 
 
 # T6 — Failure isolation preserved through production composition
-def test_failing_plugin_does_not_block_other_plugins():
+def test_failing_plugin_does_not_block_other_plugins(global_session_manager):
     runtime = create_event_runtime()
 
     failing = _FailingPlugin("c-fail")
@@ -183,7 +207,7 @@ def test_failing_plugin_does_not_block_other_plugins():
 
 
 # T7 — Raw dict rejected at the canonical boundary
-def test_raw_dict_is_rejected():
+def test_raw_dict_is_rejected(global_session_manager):
     runtime = create_event_runtime()
     plugin = _RecordingPlugin("c-dict")
     _register_running(runtime.plugin_manager, plugin)
@@ -214,7 +238,7 @@ def test_production_composition_has_no_legacy_coupling():
 
 
 # T9 — No duplicate delivery for a single canonical Event
-def test_no_duplicate_delivery():
+def test_no_duplicate_delivery(global_session_manager):
     runtime = create_event_runtime()
     plugin = _RecordingPlugin("c-single")
     _register_running(runtime.plugin_manager, plugin)
@@ -226,7 +250,7 @@ def test_no_duplicate_delivery():
 
 
 # T10 — Existing plugin without custom on_event remains compatible
-def test_existing_plugin_without_on_event_override_is_compatible():
+def test_existing_plugin_without_on_event_override_is_compatible(global_session_manager):
     runtime = create_event_runtime()
 
     # BasePlugin provides a no-op on_event; a plugin that does not override
