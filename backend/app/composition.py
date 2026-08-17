@@ -61,15 +61,22 @@ class EventRuntime:
     Exposes the assembled components of the canonical Event -> Plugin path.
     Calling ``runtime.pipeline.process(canonical_event)`` delivers the event
     to every registered + RUNNING plugin exactly once.
+
+    ``event_service`` (WO-014-018) is the canonical EventService backed by
+    the durable canonical repository (``DurableCanonicalEventRepository``),
+    so production composition also exposes durable persistence of canonical
+    Events behind the authoritative ``IEventRepository`` seam.
     """
 
     pipeline: EventPipeline
     plugin_manager: PluginManager
     plugin_dispatcher: PluginDispatcher
+    event_service: EventService
 
 
 def create_event_runtime(
     plugin_manager: Optional[PluginManager] = None,
+    repository: Optional[IEventRepository] = None,
 ) -> EventRuntime:
     """Assemble the authoritative production Event -> Plugin composition.
 
@@ -77,14 +84,26 @@ def create_event_runtime(
     It wires the pipeline to the plugin layer through the WO-014-002
     ``PluginDispatcher``, exactly once.
 
+    WO-014-018: it also wires a canonical ``EventService`` backed by the
+    durable canonical repository (``DurableCanonicalEventRepository``, the
+    WO-014-016 SQLAlchemy implementation of ``IEventRepository``) so that the
+    authoritative production runtime exposes durable persistence of canonical
+    Events. Callers may inject an alternative ``IEventRepository`` for
+    testing; by default the durable canonical repository is used.
+
     Args:
         plugin_manager: Optional ``PluginManager`` to compose.  Defaults to
             the global singleton returned by ``get_plugin_manager()``.
+        repository: Optional ``IEventRepository`` to back the canonical
+            ``EventService``.  Defaults to a new
+            ``DurableCanonicalEventRepository`` (which reuses the existing
+            global ``DatabaseSessionManager`` via ``get_session_manager()``).
 
     Returns:
-        An ``EventRuntime`` handle exposing the wired pipeline, manager and
-        dispatcher.  ``handle.pipeline.process(event)`` delivers the
-        canonical ``Event`` to every registered + RUNNING plugin.
+        An ``EventRuntime`` handle exposing the wired pipeline, manager,
+        dispatcher and durable-backed ``event_service``.
+        ``handle.pipeline.process(event)`` delivers the canonical ``Event``
+        to every registered + RUNNING plugin.
     """
     manager = (
         plugin_manager if plugin_manager is not None else get_plugin_manager()
@@ -94,10 +113,15 @@ def create_event_runtime(
     dispatcher = PluginDispatcher(plugin_manager=manager)
     pipeline.set_dispatcher(dispatcher)
 
+    if repository is None:
+        repository = DurableCanonicalEventRepository()
+    event_service = EventService(repository=repository)
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
         plugin_dispatcher=dispatcher,
+        event_service=event_service,
     )
 
 
