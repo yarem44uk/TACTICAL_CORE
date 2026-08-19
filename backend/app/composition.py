@@ -55,6 +55,8 @@ from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
 from app.database.session import get_session_manager
 from app.entity_manager import EntityManager
 from app.entity_bridge import EntityBridge
+from app.entity_read.entity_read_service import EntityReadService
+from app.entity_read.projection_observability import ProjectionObservability
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,16 @@ class EventRuntime:
     the durable canonical repository (``DurableCanonicalEventRepository``),
     so production composition also exposes durable persistence of canonical
     Events behind the authoritative ``IEventRepository`` seam.
+
+    ``entity_manager`` (WO-014-022) is the authoritative Entity owner used
+    by the Event -> Entity projection.
+
+    ``entity_read`` (WO-014-024) is a thin, read-only canonical read surface
+    over ``entity_manager`` for downstream Entity consumers.
+
+    ``projection_observability`` (WO-014-024) is the projection health/-
+    observability signal (last projected event_id, Entity count, projection
+    failure count).  Strictly diagnostic; never gates Event persistence.
     """
 
     pipeline: EventPipeline
@@ -76,6 +88,8 @@ class EventRuntime:
     plugin_dispatcher: PluginDispatcher
     event_service: EventService
     entity_manager: EntityManager
+    entity_read: EntityReadService
+    projection_observability: ProjectionObservability
 
 
 def create_event_runtime(
@@ -140,12 +154,30 @@ def create_event_runtime(
     entity_bridge = EntityBridge(entity_manager=entity_manager)
     pipeline.set_projection(_project_event_to_entity(entity_bridge))
 
+    # WO-014-024 — canonical Entity read-side + projection observability
+    # (additive wiring).
+    #
+    # G2: expose a thin, read-only, canonical read surface over the
+    # authoritative EntityManager for downstream consumers.
+    entity_read = EntityReadService(entity_manager=entity_manager)
+    #
+    # G3: projection observability/health signal.  The recorder wraps the
+    # projection callable so that (a) on success it records the projected
+    # event_id + live Entity count, and (b) on failure it increments a
+    # projection-failure counter and re-raises, preserving the pipeline's
+    # WO-014-023 best-effort isolation.  It is strictly diagnostic and never
+    # gates durable Event persistence.
+    projection_observability = ProjectionObservability(entity_manager=entity_manager)
+    pipeline.set_projection(projection_observability.wrap(_project_event_to_entity(entity_bridge)))
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
         plugin_dispatcher=dispatcher,
         event_service=event_service,
         entity_manager=entity_manager,
+        entity_read=entity_read,
+        projection_observability=projection_observability,
     )
 
 
