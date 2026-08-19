@@ -1,5 +1,6 @@
 from typing import List, Callable, Any, Optional
 from threading import Lock
+import logging
 from .interfaces.i_event_pipeline import IEventPipeline
 
 class EventPipeline(IEventPipeline):
@@ -10,6 +11,7 @@ class EventPipeline(IEventPipeline):
         self._dispatcher: Optional[Any] = None
         self._repository: Optional[Any] = None
         self._event_bus: Optional[Any] = None
+        self._projection: Optional[Any] = None
         self._lock = Lock()
 
     def set_dispatcher(self, dispatcher: Any) -> None:
@@ -20,6 +22,20 @@ class EventPipeline(IEventPipeline):
 
     def set_event_bus(self, event_bus: Any) -> None:
         self._event_bus = event_bus
+
+    def set_projection(self, projection: Any) -> None:
+        """Attach an optional entity-projection step (WO-014-022).
+
+        The projection is invoked AFTER the durable repository has persisted
+        the canonical Event, and is strictly best-effort: a projection
+        failure is logged but never propagated, so it can neither roll back
+        nor prevent durable Event persistence.
+
+        Args:
+            projection: A callable ``projection(event)`` that derives Entity
+                state from a canonical Event (e.g. an EntityBridge adapter).
+        """
+        self._projection = projection
 
     def process(self, event: Any) -> bool:
         with self._lock:
@@ -47,7 +63,20 @@ class EventPipeline(IEventPipeline):
             # 5. Repository
             if self._repository and hasattr(self._repository, 'save'):
                 self._repository.save(event)
-                
+
+            # 5b. Entity projection (WO-014-022) — AFTER durable persistence,
+            #     best-effort: a projection failure must never roll back or
+            #     prevent the canonical Event durability achieved in (5).
+            if self._projection is not None:
+                try:
+                    self._projection(event)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "EventPipeline projection failed (best-effort, not "
+                        "propagating) for event_id=%s",
+                        getattr(event, "event_id", None),
+                    )
+
             # 6. EventBus
             if self._event_bus and hasattr(self._event_bus, 'publish'):
                 self._event_bus.publish(event)
@@ -79,3 +108,4 @@ class EventPipeline(IEventPipeline):
             self._dispatcher = None
             self._repository = None
             self._event_bus = None
+            self._projection = None

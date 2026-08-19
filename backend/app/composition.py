@@ -53,6 +53,8 @@ from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_dispatcher.plugin_dispatcher import PluginDispatcher
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
 from app.database.session import get_session_manager
+from app.entity_manager import EntityManager
+from app.entity_bridge import EntityBridge
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class EventRuntime:
     plugin_manager: PluginManager
     plugin_dispatcher: PluginDispatcher
     event_service: EventService
+    entity_manager: EntityManager
 
 
 def create_event_runtime(
@@ -127,12 +130,52 @@ def create_event_runtime(
     event_service = EventService(repository=repository)
     pipeline.set_repository(repository)
 
+    # WO-014-022 — Event -> Entity projection (additive wiring).
+    # After the canonical Event has been durably persisted through the
+    # repository above, the production runtime derives a projected Entity
+    # state via EntityBridge -> EntityManager.  The projection is strictly
+    # best-effort (EntityBridge never propagates) and isolated from durable
+    # Event persistence, which remains the source of truth.
+    entity_manager = EntityManager()
+    entity_bridge = EntityBridge(entity_manager=entity_manager)
+    pipeline.set_projection(_project_event_to_entity(entity_bridge))
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
         plugin_dispatcher=dispatcher,
         event_service=event_service,
+        entity_manager=entity_manager,
     )
+
+
+def _project_event_to_entity(entity_bridge: EntityBridge):
+    """Return a deterministic canonical ``Event`` -> Entity projection callable.
+
+    The returned callable adapts a canonical ``app.event.event.Event`` into
+    the ``EntityBridge.process_event`` contract (``event_data`` dict carrying
+    ``entity_type`` + ``entity_id``).  The ``entity_type`` is derived
+    deterministically from the canonical ``Event.event_type`` value, the
+    ``entity_id`` from ``Event.entity_id``, and the entity attribute payload
+    from ``Event.payload``.  Events without an ``entity_id`` are skipped by
+    the bridge (no projection), which is safe and deterministic.
+
+    Projection failures are swallowed by ``EntityBridge`` (best-effort), so
+    they never roll back or prevent the already-durable canonical Event.
+    """
+    def project(event: Event) -> None:
+        entity_bridge.process_event(
+            event_data={
+                "entity_type": event.event_type.value,
+                "entity_id": event.entity_id,
+                "entity": dict(event.payload),
+            },
+            event_id=event.event_id,
+            correlation_id=(
+                event.metadata.correlation_id if event.metadata else None
+            ),
+        )
+    return project
 
 
 # ---------------------------------------------------------------------------
