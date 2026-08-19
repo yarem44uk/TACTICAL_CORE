@@ -52,6 +52,7 @@ from app.event.event import Event  # noqa: F401  (public type re-export)
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_dispatcher.plugin_dispatcher import PluginDispatcher
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
+from app.database.session import get_session_manager
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ def create_event_runtime(
 
     if repository is None:
         repository = DurableCanonicalEventRepository()
+        _ensure_durable_database_ready(repository)
     event_service = EventService(repository=repository)
     pipeline.set_repository(repository)
 
@@ -164,6 +166,40 @@ from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository as DurableCanonicalEventRepository,
 )
 from app.event_repository.interfaces.i_event_repository import IEventRepository
+
+
+def _ensure_durable_database_ready(repository: IEventRepository) -> None:
+    """Ensure the canonical durable persistence plane's table is ready.
+
+    Closes the WO-014-021 lifecycle gap: the production composition root
+    (``create_event_runtime``) wires the durable canonical repository into the
+    ``EventPipeline`` persistence seam, but never initialised the durable
+    table.  This helper brings the durable table up (via the repository's own
+    ``initialize()`` -> ``Base.metadata.create_all`` on the single existing
+    ``DatabaseSessionManager`` engine) so that ``pipeline.process(event)`` can
+    durably persist out-of-the-box.
+
+    This mirrors the already-approved convention in
+    ``durable_build_default_components()``: the canonical database owner
+    (``DatabaseSessionManager``) is configured by the embedding application
+    (``configure_session_manager`` / ``initialize_database``), and the
+    composition initialises the durable table on top of it.  It never
+    constructs a second engine, sessionmaker, or database singleton
+    (INVARIANT 4).
+
+    Test-safety: if no session manager is configured yet (e.g. runtime-only
+    tests that exercise the pipeline without persistence), the table
+    initialisation is skipped rather than forcing a database to appear.  Both
+    ``DatabaseSessionManager.initialize`` and the repository initialisation are
+    internally idempotent, so repeated composition calls are safe.
+    """
+    try:
+        get_session_manager()
+    except RuntimeError:
+        # No session manager configured: persistence is not active for this
+        # composition. Leave the lifecycle to the embedding application.
+        return
+    repository.initialize()
 
 
 @dataclass(frozen=True)
