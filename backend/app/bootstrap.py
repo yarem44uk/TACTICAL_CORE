@@ -45,6 +45,7 @@ lifecycle (``PluginManager``).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -55,6 +56,8 @@ from app.event_sources.interfaces.i_event_source_adapter import IEventSourceAdap
 from app.event_sources.runtime.adapter_supervisor import AdapterSupervisor
 from app.event_sources.runtime.runtime_health import SourceSnapshot, source_snapshot
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -122,8 +125,59 @@ class ProductionRuntime:
         """
         if self.started:
             return
+        # WO-014-026 — Production startup/recovery wiring.
+        #
+        # Before normal steady-state source processing begins, run the
+        # deterministic projection catch-up driver (WO-014-025) so that any
+        # durable Event persisted before a crash/restart but not yet projected
+        # into Entity state is healed on startup.  The durable checkpoint
+        # guarantees this is idempotent and re-runs only un-checkpointed
+        # Events (projection-first / checkpoint-second).
+        #
+        # Failure semantics (WO-014-026): a startup catch-up failure (e.g. an
+        # unavailable DB) must not silently destroy the production runtime
+        # lifecycle.  We log it and allow startup to proceed.  This never
+        # advances the projection checkpoint past a failed projection (that
+        # guarantee is owned by ProjectionCatchUp, which stops at the first
+        # failed Event and leaves the durable Event untouched for a later
+        # retry).
+        self._run_startup_catch_up()
         self.supervisor.start_all()
         self.started = True
+
+    def _run_startup_catch_up(self) -> None:
+        """Run the deterministic projection catch-up driver once at startup.
+
+        Executes the existing ``EventRuntime.catch_up.run()`` exactly once,
+        before source adapters begin steady-state processing.  If the runtime
+        exposes no catch-up driver (e.g. a test-only composition without the
+        durable projection pipeline), this is a no-op.
+
+        A failure is logged and isolated rather than raised, so a projection
+        catch-up problem does not prevent the production source runtime from
+        starting.  The durable Event log, the projection checkpoint, and the
+        WO-014-025 invariant (the checkpoint never advances past a failed
+        projection) are all preserved.
+        """
+        catch_up = getattr(self.event_runtime, "catch_up", None)
+        if catch_up is None:
+            return
+        try:
+            result = catch_up.run()
+            if result.failed:
+                logger.warning(
+                    "ProductionRuntime: startup catch-up left %d event(s) "
+                    "unprojected (checkpoint seq=%d) — they will be retried "
+                    "on the next catch-up/startup.",
+                    result.failed,
+                    result.checkpoint_seq,
+                )
+        except Exception:
+            logger.exception(
+                "ProductionRuntime: startup catch-up failed; source runtime "
+                "will still start.  Durable Events and the projection "
+                "checkpoint remain authoritative for a later retry."
+            )
 
     def stop(self) -> None:
         """Stop source processing deterministically.
