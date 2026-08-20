@@ -7,19 +7,34 @@ from uuid import uuid4
 
 import pytest
 
+from app.database.session import configure_session_manager
 from app.entity_repository import SQLiteEntityRepository
 
 
 @pytest.fixture
 def repo():
-    """Create a temporary SQLite repository for each test."""
-    db_fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(db_fd)
-    r = SQLiteEntityRepository(db_path=db_path)
+    """Create a SQLite Entity repository backed by the shared session manager.
+
+    WO-014-025 refactored ``SQLiteEntityRepository`` off its independent
+    raw-sqlite3 database onto the single canonical ``DatabaseSessionManager``
+    (single-owner invariant). The fixture therefore configures a file-backed
+    session manager (QueuePool + ``check_same_thread=False``, matching real
+    production SQLite) and initialises the durable ``entities`` table through
+    the shared metadata, mirroring how the durable event repository tests
+    configure the canonical DB owner. A file-backed DB (not ``:memory:``) is
+    used so concurrent threads each get their own pooled connection, exactly as
+    in production.
+    """
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    manager = configure_session_manager(f"sqlite:///{path}")
+    r = SQLiteEntityRepository(session_manager=manager)
+    r.initialize()
     yield r
     r.close()
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    manager.close()
+    if os.path.exists(path):
+        os.remove(path)
 
 
 class TestSave:

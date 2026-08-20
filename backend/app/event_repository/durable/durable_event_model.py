@@ -22,7 +22,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from sqlalchemy import DateTime, String, Text, UniqueConstraint, JSON
+from sqlalchemy import (
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    JSON,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -51,6 +58,20 @@ class DurableCanonicalEvent(Base):
         String(36),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
+    )
+
+    # WO-014-025 — durable deterministic monotonic sequence (replay ordering).
+    # A DB-derived, monotonically increasing integer assigned at insert time
+    # from the durable log state (MAX(seq)+1 within the same transaction).
+    # Used for deterministic replay ordering (ORDER BY seq ASC). Gaps are
+    # acceptable. A duplicate canonical event_id insertion is rejected by the
+    # UNIQUE(event_id) constraint and rolls back WITHOUT consuming a sequence,
+    # so a duplicate retains its original seq. NOT the ORM identity key.
+    seq: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        unique=True,
+        index=True,
     )
 
     # Authoritative canonical durable identity.

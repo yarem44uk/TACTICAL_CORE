@@ -99,6 +99,18 @@ class SQLAlchemyEventRepository(IEventRepository):
             created_at=row.created_at,
         )
 
+    def _next_seq(self, session: Any) -> int:
+        """Return the next durable monotonic sequence value.
+
+        Derived from the durable log state (``MAX(seq)+1``) within the same
+        transaction/session, so it is monotonic, survives restart, and is
+        rolled back together with any failed duplicate insertion (preserving
+        the original sequence of an already-persisted canonical event_id).
+        """
+        stmt = select(func.max(DurableCanonicalEvent.seq))
+        current_max = session.execute(stmt).scalar_one_or_none()
+        return int(current_max) + 1 if current_max is not None else 1
+
     @staticmethod
     def _resolve_event_type(raw: str) -> EventType:
         """Resolve a stored event-type string back to the canonical enum."""
@@ -113,6 +125,7 @@ class SQLAlchemyEventRepository(IEventRepository):
         """Persist one canonical Event. Idempotent and conflict-safe."""
         row = self._to_persistent(event)
         with self.session_manager.session(commit=True) as session:
+            row.seq = self._next_seq(session)
             session.add(row)
             try:
                 session.flush()
@@ -132,6 +145,15 @@ class SQLAlchemyEventRepository(IEventRepository):
         """
         rows = [self._to_persistent(e) for e in events]
         with self.session_manager.session(commit=True) as session:
+            # Assign distinct monotonic seq values within the batch. Because the
+            # rows are not flushed until add_all, a naive per-row MAX(seq)+1 read
+            # would return the same value for every row. Track a running counter
+            # so each row in the batch gets a unique, strictly-increasing seq
+            # (satisfying the UNIQUE(seq) invariant and deterministic replay order).
+            next_seq = self._next_seq(session)
+            for row in rows:
+                row.seq = next_seq
+                next_seq += 1
             session.add_all(rows)
             session.flush()
 
@@ -173,14 +195,52 @@ class SQLAlchemyEventRepository(IEventRepository):
             return True
 
     def list_all(self) -> List[Event]:
-        """Return all durable canonical Events in insertion order."""
+        """Return all durable canonical Events in deterministic seq order."""
         with self.session_manager.session(commit=False) as session:
             stmt = select(DurableCanonicalEvent).order_by(
-                DurableCanonicalEvent.created_at,
-                DurableCanonicalEvent.id,
+                DurableCanonicalEvent.seq.asc(),
             )
             rows = list(session.execute(stmt).scalars().all())
         return [self._from_persistent(r) for r in rows]
+
+    def list_after_seq(self, seq: int) -> List[Event]:
+        """Return durable canonical Events with seq strictly greater than a
+        checkpoint, ordered deterministically by seq ASC (WO-014-025).
+
+        This is the additive sequential-retrieval API used by deterministic
+        catch-up. It does not alter any existing repository contract.
+        """
+        return [event for _, event in self.iter_after_seq(seq)]
+
+    def iter_after_seq(self, seq: int) -> List[tuple]:
+        """Return ``(seq, Event)`` pairs with seq strictly greater than a
+        checkpoint, ordered deterministically by seq ASC (WO-014-025).
+
+        The catch-up driver needs the durable ``seq`` to advance the projection
+        checkpoint. The canonical ``Event`` domain object does not carry
+        ``seq`` (a durable persistence attribute), so this additive API returns
+        the seq alongside each canonical Event. It does not modify the canonical
+        ``Event`` model.
+        """
+        from app.event_repository.durable.durable_event_model import (
+            DurableCanonicalEvent,
+        )
+
+        with self.session_manager.session(commit=False) as session:
+            stmt = (
+                select(DurableCanonicalEvent)
+                .where(DurableCanonicalEvent.seq > int(seq))
+                .order_by(DurableCanonicalEvent.seq.asc())
+            )
+            rows = list(session.execute(stmt).scalars().all())
+        return [(r.seq, self._from_persistent(r)) for r in rows]
+
+    def max_seq(self) -> int:
+        """Return the highest durable seq, or 0 if the log is empty."""
+        with self.session_manager.session(commit=False) as session:
+            stmt = select(func.max(DurableCanonicalEvent.seq))
+            current_max = session.execute(stmt).scalar_one_or_none()
+        return int(current_max) if current_max is not None else 0
 
     def list_by_type(self, event_type: str) -> List[Event]:
         """Return canonical Events filtered by event type string."""

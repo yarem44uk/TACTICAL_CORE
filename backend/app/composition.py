@@ -57,6 +57,11 @@ from app.entity_manager import EntityManager
 from app.entity_bridge import EntityBridge
 from app.entity_read.entity_read_service import EntityReadService
 from app.entity_read.projection_observability import ProjectionObservability
+from app.entity_repository.sqlalchemy_entity_repository import (
+    SQLAlchemyEntityRepository,
+)
+from app.projection.checkpoint import ProjectionCheckpointRepository
+from app.projection.catch_up import ProjectionCatchUp
 
 
 @dataclass(frozen=True)
@@ -90,6 +95,9 @@ class EventRuntime:
     entity_manager: EntityManager
     entity_read: EntityReadService
     projection_observability: ProjectionObservability
+    entity_repository: Optional["object"] = None
+    projection_checkpoint: Optional["object"] = None
+    catch_up: Optional["object"] = None
 
 
 def create_event_runtime(
@@ -150,7 +158,13 @@ def create_event_runtime(
     # state via EntityBridge -> EntityManager.  The projection is strictly
     # best-effort (EntityBridge never propagates) and isolated from durable
     # Event persistence, which remains the source of truth.
-    entity_manager = EntityManager()
+    #
+    # WO-014-025 (OPTION A) — durable Entity state + durable projection
+    # checkpoint. The production EntityManager is backed by the durable
+    # SQLAlchemy Entity repository (single DatabaseSessionManager owner), and a
+    # durable projection checkpoint records deterministic catch-up progress.
+    entity_repository = _build_durable_entity_repository()
+    entity_manager = EntityManager(repository=entity_repository)
     entity_bridge = EntityBridge(entity_manager=entity_manager)
     pipeline.set_projection(_project_event_to_entity(entity_bridge))
 
@@ -167,8 +181,19 @@ def create_event_runtime(
     # projection-failure counter and re-raises, preserving the pipeline's
     # WO-014-023 best-effort isolation.  It is strictly diagnostic and never
     # gates durable Event persistence.
-    projection_observability = ProjectionObservability(entity_manager=entity_manager)
+    #
+    # WO-014-025: ``last_projected_event_id`` is a read-through of the durable
+    # projection checkpoint (survives restart), not an independent source.
+    projection_checkpoint = _build_projection_checkpoint()
+    projection_observability = ProjectionObservability(
+        entity_manager=entity_manager,
+        checkpoint_repository=projection_checkpoint,
+    )
     pipeline.set_projection(projection_observability.wrap(_project_event_to_entity(entity_bridge)))
+
+    # WO-014-025 — deterministic catch-up driver over the durable event log.
+    # Wired so an embedding application can run catch-up on startup/interval.
+    catch_up = _build_catch_up(repository, projection_checkpoint, entity_bridge)
 
     return EventRuntime(
         pipeline=pipeline,
@@ -178,6 +203,9 @@ def create_event_runtime(
         entity_manager=entity_manager,
         entity_read=entity_read,
         projection_observability=projection_observability,
+        entity_repository=entity_repository,
+        projection_checkpoint=projection_checkpoint,
+        catch_up=catch_up,
     )
 
 
@@ -268,13 +296,86 @@ def _ensure_durable_database_ready(repository: IEventRepository) -> None:
     ``DatabaseSessionManager.initialize`` and the repository initialisation are
     internally idempotent, so repeated composition calls are safe.
     """
-    try:
-        get_session_manager()
-    except RuntimeError:
-        # No session manager configured: persistence is not active for this
-        # composition. Leave the lifecycle to the embedding application.
+    if not _session_manager_ready():
+        # No CONFIGURED-AND-INITIALISED session manager: persistence is not
+        # active for this composition. Leave the lifecycle to the embedding
+        # application. (A manager that exists but is not initialised is treated
+        # as not ready, so a stale global manager cannot crash composition.)
         return
     repository.initialize()
+
+
+def _session_manager_ready() -> bool:
+    """Return True if the canonical DatabaseSessionManager is configured AND
+    initialised (an engine is bound).
+
+    Test-safety: composition that exercises the runtime without persistence
+    must not force a database to appear. ``engine`` raises ``RuntimeError``
+    when the manager exists but is not initialised, so both "not configured"
+    and "configured but not initialised" are correctly treated as not ready.
+    Mirrors ``_ensure_durable_database_ready``.
+    """
+    try:
+        get_session_manager().engine
+        return True
+    except RuntimeError:
+        return False
+
+
+def _build_durable_entity_repository() -> "SQLAlchemyEntityRepository":
+    """Build the durable Entity repository over the single DB owner (WO-014-025).
+
+    Constructs ``SQLAlchemyEntityRepository`` (the production durable
+    implementation of the Entity ``IRepository`` used by :class:`EntityManager`),
+    which reuses the canonical ``DatabaseSessionManager``. Initialises the
+    durable ``entities`` table on the shared ``Base.metadata`` when the session
+    manager is configured. No second engine/sessionmaker/owner is created.
+    """
+    repo = SQLAlchemyEntityRepository()
+    if _session_manager_ready():
+        repo.initialize()
+    return repo
+
+
+def _build_projection_checkpoint() -> "ProjectionCheckpointRepository":
+    """Build the durable projection checkpoint over the single DB owner.
+
+    Initialises the ``projection_checkpoint`` table on the shared
+    ``Base.metadata`` when the session manager is configured. Single owner.
+    """
+    repo = ProjectionCheckpointRepository()
+    if _session_manager_ready():
+        repo.initialize()
+    return repo
+
+
+def _build_catch_up(
+    repository: IEventRepository,
+    checkpoint_repository: ProjectionCheckpointRepository,
+    entity_bridge: EntityBridge,
+) -> Optional[ProjectionCatchUp]:
+    """Build the deterministic catch-up driver (WO-014-025 §E).
+
+    Returns ``None`` when persistence is not active (no session manager), so a
+    runtime-only composition does not force a database to appear.
+    """
+    if not _session_manager_ready():
+        return None
+    from app.event_repository.durable.sqlalchemy_event_repository import (
+        SQLAlchemyEventRepository,
+    )
+
+    # The catch-up driver needs the durable event repository's sequential
+    # retrieval API. When an injected (non-durable) repository is supplied,
+    # fall back to a durable repository over the same owner.
+    event_repo = repository
+    if not isinstance(event_repo, SQLAlchemyEventRepository):
+        event_repo = SQLAlchemyEventRepository()
+    return ProjectionCatchUp(
+        event_repository=event_repo,
+        checkpoint_repository=checkpoint_repository,
+        projection=_project_event_to_entity(entity_bridge),
+    )
 
 
 @dataclass(frozen=True)
