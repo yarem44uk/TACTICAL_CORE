@@ -62,6 +62,7 @@ from app.entity_repository.sqlalchemy_entity_repository import (
 )
 from app.projection.checkpoint import ProjectionCheckpointRepository
 from app.projection.catch_up import ProjectionCatchUp
+from app.projection.recovery_health import ProjectionRecoveryHealth
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class EventRuntime:
     entity_repository: Optional["object"] = None
     projection_checkpoint: Optional["object"] = None
     catch_up: Optional["object"] = None
+    projection_recovery_health: Optional["object"] = None
 
 
 def create_event_runtime(
@@ -195,6 +197,28 @@ def create_event_runtime(
     # Wired so an embedding application can run catch-up on startup/interval.
     catch_up = _build_catch_up(repository, projection_checkpoint, entity_bridge)
 
+    # WO-014-027 — production projection / recovery observability.
+    #
+    # A deterministic, READ-ONLY health/state contract over the durable
+    # Event -> Entity projection and its catch-up recovery.  It composes the
+    # SAME durable event repository and projection checkpoint used by the
+    # production catch-up (single DatabaseSessionManager owner — no second
+    # engine/sessionmaker/persistence plane).  It answers: current checkpoint,
+    # durable projection backlog, latest recovery status/error, and a
+    # deterministic healthy / degraded / recovering classification.
+    #
+    # The catch-up driver's ``run()`` is wrapped (additively) so that every
+    # catch-up pass — including the WO-014-026 startup recovery — records its
+    # outcome into the health contract.  The wrapper never alters catch-up
+    # semantics (projection-first / checkpoint-second are untouched) and never
+    # runs on the pipeline hot path.  Health inspection never advances the
+    # checkpoint, never persists events, and never projects entities.
+    projection_recovery_health = _build_projection_recovery_health(
+        repository, projection_checkpoint
+    )
+    if catch_up is not None and projection_recovery_health is not None:
+        _instrument_catch_up(catch_up, projection_recovery_health)
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
@@ -206,6 +230,7 @@ def create_event_runtime(
         entity_repository=entity_repository,
         projection_checkpoint=projection_checkpoint,
         catch_up=catch_up,
+        projection_recovery_health=projection_recovery_health,
     )
 
 
@@ -349,6 +374,24 @@ def _build_projection_checkpoint() -> "ProjectionCheckpointRepository":
     return repo
 
 
+def _resolve_durable_event_repo(repository: IEventRepository):
+    """Resolve the durable canonical event repository for sequential retrieval.
+
+    When an injected (non-durable) ``IEventRepository`` is supplied, fall back
+    to a ``SQLAlchemyEventRepository`` over the same canonical
+    ``DatabaseSessionManager`` owner.  Used by the catch-up driver and the
+    projection/recovery health contract so both observe the SAME durable event
+    log (no second owner, no second plane).
+    """
+    from app.event_repository.durable.sqlalchemy_event_repository import (
+        SQLAlchemyEventRepository,
+    )
+
+    if isinstance(repository, SQLAlchemyEventRepository):
+        return repository
+    return SQLAlchemyEventRepository()
+
+
 def _build_catch_up(
     repository: IEventRepository,
     checkpoint_repository: ProjectionCheckpointRepository,
@@ -361,21 +404,62 @@ def _build_catch_up(
     """
     if not _session_manager_ready():
         return None
-    from app.event_repository.durable.sqlalchemy_event_repository import (
-        SQLAlchemyEventRepository,
-    )
-
-    # The catch-up driver needs the durable event repository's sequential
-    # retrieval API. When an injected (non-durable) repository is supplied,
-    # fall back to a durable repository over the same owner.
-    event_repo = repository
-    if not isinstance(event_repo, SQLAlchemyEventRepository):
-        event_repo = SQLAlchemyEventRepository()
+    event_repo = _resolve_durable_event_repo(repository)
     return ProjectionCatchUp(
         event_repository=event_repo,
         checkpoint_repository=checkpoint_repository,
         projection=_project_event_to_entity(entity_bridge),
     )
+
+
+def _build_projection_recovery_health(
+    repository: IEventRepository,
+    checkpoint_repository: ProjectionCheckpointRepository,
+) -> Optional[ProjectionRecoveryHealth]:
+    """Build the deterministic projection/recovery health contract (WO-014-027).
+
+    Composes the SAME durable event repository and projection checkpoint used
+    by the production catch-up, so observability reflects the authoritative
+    projection/recovery state.  Returns ``None`` when persistence is not
+    active (no session manager) — matching the catch-up driver — so a
+    runtime-only composition does not force a database to appear and the
+    health contract does not report misleading durable state.
+    """
+    if not _session_manager_ready():
+        return None
+    event_repo = _resolve_durable_event_repo(repository)
+    return ProjectionRecoveryHealth(
+        checkpoint_repository=checkpoint_repository,
+        event_repository=event_repo,
+    )
+
+
+def _instrument_catch_up(
+    catch_up: ProjectionCatchUp,
+    health: ProjectionRecoveryHealth,
+) -> None:
+    """Additively wrap ``catch_up.run()`` to record its outcome (WO-014-027).
+
+    This is a thin, non-invasive observer: it does NOT modify
+    ``ProjectionCatchUp`` itself and does NOT change its semantics
+    (projection-first / checkpoint-second / stop-at-first-failure are all
+    untouched).  On a successful pass it records the returned ``CatchUpResult``
+    (so ``failed>0`` is surfaced as a DEGRADED state); on an exception it
+    records the error and re-raises exactly as the caller expects (the
+    bootstrap startup path already isolates/logs that exception).
+    """
+    original_run = catch_up.run
+
+    def observed_run():
+        try:
+            result = original_run()
+        except Exception as exc:  # noqa: BLE001 - re-raised unchanged below
+            health.record_recovery(error=exc)
+            raise
+        health.record_recovery(result=result)
+        return result
+
+    catch_up.run = observed_run  # type: ignore[method-assign]
 
 
 @dataclass(frozen=True)
