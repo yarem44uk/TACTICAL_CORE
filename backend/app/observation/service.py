@@ -40,6 +40,10 @@ from app.observation.models import CanonicalEvent, ObservationResult
 from app.observation.processor import ObservationProcessor, ObservationProcessorError
 from app.observation.mapper import EventToObservationMapper
 from app.observation.factory import ObservationFactory
+from app.observation.canonical_adapter import (
+    CanonicalEventAdapterError,
+    CanonicalEventToObservationAdapter,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -97,20 +101,27 @@ class ObservationService:
 
     def __init__(
         self,
-        event_bus: EventBus,
-        session: Session,
+        event_bus: Optional[EventBus] = None,
+        session: Session = None,
         event_patterns: Optional[List[str]] = None,
         custom_mapper: Optional[EventToObservationMapper] = None,
         custom_factory: Optional[ObservationFactory] = None,
+        custom_adapter: Optional[CanonicalEventToObservationAdapter] = None,
     ):
         """Initialize the Observation Service.
 
         Args:
-            event_bus: Event Bus instance for subscription.
+            event_bus: Optional legacy Event Bus instance for the pattern-based
+                ``start()`` subscription path.  When ``None``, the service is
+                used exclusively through the canonical EventBus integration
+                (``subscribe_canonical``, WO-015).
             session: SQLAlchemy database session.
             event_patterns: Optional custom event patterns to subscribe to.
             custom_mapper: Optional custom EventToObservationMapper.
             custom_factory: Optional custom ObservationFactory.
+            custom_adapter: Optional custom canonical Event -> Observation
+                adapter (WO-015). Defaults to a new
+                ``CanonicalEventToObservationAdapter``.
 
         Raises:
             ObservationServiceError: If initialization fails.
@@ -118,6 +129,14 @@ class ObservationService:
         self._event_bus = event_bus
         self._session = session
         self._event_patterns = event_patterns or self.DEFAULT_EVENT_PATTERNS
+
+        # WO-015 — canonical EventBus subscription state.
+        # The canonical EventBus is reached through EventPipeline.set_event_bus()
+        # and delivers canonical app.event.event.Event objects to subscribers.
+        # We track the canonical subscription separately from the legacy
+        # pattern-based subscription so the two paths do not interfere.
+        self._canonical_subscription = None
+        self._canonical_adapter = custom_adapter or CanonicalEventToObservationAdapter()
 
         # Initialize processor with dependencies
         self._processor = ObservationProcessor(
@@ -177,6 +196,12 @@ class ObservationService:
             logger.warning("ObservationService already running")
             return
 
+        if self._event_bus is None:
+            raise ObservationServiceError(
+                "ObservationService.start() requires a legacy EventBus; "
+                "use subscribe_canonical() for canonical EventBus integration."
+            )
+
         try:
             # Subscribe to Event Bus
             self._subscription_id = self._event_bus.subscribe(
@@ -206,7 +231,7 @@ class ObservationService:
         if not self._running:
             return
 
-        if self._subscription_id:
+        if self._subscription_id and self._event_bus is not None:
             # Note: EventBus.subscribe returns subscription_id, but unsubscribe takes subscriber_id
             self._event_bus.unsubscribe("observation-service")
 
@@ -250,10 +275,168 @@ class ObservationService:
                     f"Failed to process event {result.event_id}: "
                     f"{result.error_message}"
                 )
+                # WO-015 defect repair: same shared-session recovery as the
+                # canonical path (duplicate IntegrityError leaves the Session
+                # in a rolled-back state).
+                self._recover_session()
 
         except Exception as e:
             self._stats["events_failed"] += 1
             logger.error(f"Event handling error: {e}")
+            # WO-015 defect repair: a persistence failure (e.g. UNIQUE
+            # immutable_id IntegrityError on a duplicate event) leaves the
+            # shared SQLAlchemy Session in a rolled-back state. Recover it so
+            # the next independent event can be processed.
+            self._recover_session()
+
+    def _recover_session(self) -> None:
+        """Restore the shared SQLAlchemy Session to a usable transaction state.
+
+        SQLAlchemy requires an explicit ``rollback()`` after a flush/commit
+        exception (e.g. IntegrityError) before the Session can be reused.
+        Without it, the next event fails with "This Session's transaction has
+        been rolled back due to a previous exception during flush", silently
+        dropping all subsequent Observations.
+
+        Called only on the failure path so successful processing is unaffected.
+        Idempotent and safe: rolling back a session with no failed transaction
+        is a harmless no-op.
+        """
+        if self._session is None:
+            return
+        try:
+            self._session.rollback()
+            logger.debug("Recovered shared observation session after failure")
+        except Exception as e:  # noqa: BLE001 - best-effort session recovery
+            logger.error(f"Failed to recover observation session: {e}")
+
+
+    # ------------------------------------------------------------------
+    # WO-015 — canonical EventBus integration
+    # ------------------------------------------------------------------
+    def subscribe_canonical(
+        self,
+        event_bus: Any,
+    ) -> object:
+        """Subscribe this service to the canonical EventBus.
+
+        The canonical EventBus (``app.event_bus.event_bus.EventBus``) is reached
+        through ``EventPipeline.set_event_bus()`` and delivers canonical
+        ``app.event.event.Event`` objects to its subscribers.  We subscribe to
+        ``EventType.CUSTOM``, which is the type produced by the production
+        EventFactory for source-adapter events.
+
+        Args:
+            event_bus: The canonical EventBus instance (duck-typed so this does
+                not hard-couple the service to one implementation).
+
+        Returns:
+            The canonical subscription handle (for later unsubscribe).
+
+        Raises:
+            ObservationServiceError: If subscription fails.
+        """
+        from app.event.event_types import EventType
+
+        if self._canonical_subscription is not None:
+            logger.warning("ObservationService already subscribed to canonical EventBus")
+            return self._canonical_subscription
+
+        try:
+            subscription = event_bus.subscribe(
+                EventType.CUSTOM,
+                self._handle_canonical_event,
+            )
+            self._canonical_subscription = subscription
+            self._stats["start_time"] = datetime.now(timezone.utc)
+            logger.info(
+                "ObservationService subscribed to canonical EventBus "
+                "(EventType.CUSTOM)"
+            )
+            return subscription
+        except Exception as e:
+            logger.error(f"Failed to subscribe to canonical EventBus: {e}")
+            raise ObservationServiceError(
+                f"Canonical EventBus subscription failed: {e}"
+            ) from e
+
+    def unsubscribe_canonical(self, event_bus: Any = None) -> bool:
+        """Unsubscribe this service from the canonical EventBus.
+
+        Args:
+            event_bus: Optional canonical EventBus to unsubscribe from.  If
+                omitted, the subscription is only cleared locally.
+
+        Returns:
+            True if a canonical subscription was present and removed.
+        """
+        if self._canonical_subscription is None:
+            return False
+        removed = False
+        if event_bus is not None:
+            try:
+                removed = bool(event_bus.unsubscribe(self._canonical_subscription))
+            except Exception as e:  # noqa: BLE001 - best-effort unsubscribe
+                logger.warning(f"Failed to unsubscribe canonical EventBus: {e}")
+        self._canonical_subscription = None
+        logger.info("ObservationService unsubscribed from canonical EventBus")
+        return removed or True
+
+    @property
+    def canonical_subscription(self) -> object:
+        """Return the active canonical EventBus subscription (or None)."""
+        return self._canonical_subscription
+
+    def _handle_canonical_event(self, event: Any) -> None:
+        """Handle a canonical ``app.event.event.Event`` from the canonical EventBus.
+
+        This is the single-argument callback invoked by the canonical EventBus
+        (``app.event_bus.event_bus.EventBus``), which delivers canonical Event
+        objects directly (no ``context``).  The event is adapted to the
+        Observation representation and processed through the existing
+        ObservationProcessor, preserving mapping, immutable_id, duplicate
+        protection and failure-isolation semantics.
+
+        Args:
+            event: The canonical Event object.
+        """
+        self._stats["events_received"] += 1
+        self._stats["last_event_time"] = datetime.now(timezone.utc)
+
+        try:
+            event_dict = self._canonical_adapter.to_observation_dict(event)
+        except CanonicalEventAdapterError as e:
+            self._stats["events_failed"] += 1
+            logger.warning(f"Canonical event adaptation failed: {e}")
+            return
+
+        try:
+            result = self._processor.process_event(event_dict)
+            if result.success:
+                self._stats["events_processed"] += 1
+                self._stats["observations_created"] += 1
+                logger.debug(
+                    f"Created Observation {result.observation_id} "
+                    f"from canonical event {result.event_id}"
+                )
+            else:
+                self._stats["events_failed"] += 1
+                logger.warning(
+                    f"Failed to process canonical event {result.event_id}: "
+                    f"{result.error_message}"
+                )
+                # WO-015 defect repair: a persistence failure during
+                # processing (e.g. UNIQUE immutable_id IntegrityError on a
+                # duplicate event) is swallowed by the processor into a
+                # success=False result and leaves the shared Session in a
+                # rolled-back state. Recover it so the next independent event
+                # can still be persisted.
+                self._recover_session()
+        except Exception as e:
+            self._stats["events_failed"] += 1
+            logger.error(f"Canonical event handling error: {e}")
+            # Best-effort session recovery after an unexpected exception.
+            self._recover_session()
 
     def _event_to_dict(self, event: Any) -> Dict[str, Any]:
         """Convert event to dictionary.

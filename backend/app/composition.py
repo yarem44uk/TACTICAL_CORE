@@ -63,6 +63,8 @@ from app.entity_repository.sqlalchemy_entity_repository import (
 from app.projection.checkpoint import ProjectionCheckpointRepository
 from app.projection.catch_up import ProjectionCatchUp
 from app.projection.recovery_health import ProjectionRecoveryHealth
+from app.event_bus.event_bus import EventBus
+from app.observation.service import ObservationService
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,8 @@ class EventRuntime:
     projection_checkpoint: Optional["object"] = None
     catch_up: Optional["object"] = None
     projection_recovery_health: Optional["object"] = None
+    event_bus: Optional["object"] = None
+    observation_service: Optional["object"] = None
 
 
 def create_event_runtime(
@@ -219,6 +223,27 @@ def create_event_runtime(
     if catch_up is not None and projection_recovery_health is not None:
         _instrument_catch_up(catch_up, projection_recovery_health)
 
+    # WO-015 — canonical EventBus + ObservationService production wiring.
+    #
+    # The canonical EventBus (app.event_bus.event_bus.EventBus) is wired into
+    # the EventPipeline via set_event_bus(), so pipeline.process(event) reaches
+    # the ObservationService with the canonical app.event.event.Event after the
+    # durable repository + entity projection.  The ObservationService subscribes
+    # to EventType.CUSTOM (the type produced by the production EventFactory for
+    # source-adapter events) and adapts each canonical Event into an Observation
+    # through the existing ObservationProcessor (single DatabaseSessionManager
+    # owner; no second engine/sessionmaker/persistence plane).
+    #
+    # Observation persistence uses the canonical DatabaseSessionManager when it
+    # is configured; otherwise the service is constructed but persistence is
+    # left to the embedding application (mirrors the durable lifecycle guards
+    # above, and never forces a database to appear in runtime-only tests).
+    event_bus = EventBus()
+    observation_service = _build_observation_service()
+    if observation_service is not None:
+        observation_service.subscribe_canonical(event_bus)
+        pipeline.set_event_bus(event_bus)
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
@@ -231,6 +256,8 @@ def create_event_runtime(
         projection_checkpoint=projection_checkpoint,
         catch_up=catch_up,
         projection_recovery_health=projection_recovery_health,
+        event_bus=event_bus,
+        observation_service=observation_service,
     )
 
 
@@ -432,6 +459,29 @@ def _build_projection_recovery_health(
         checkpoint_repository=checkpoint_repository,
         event_repository=event_repo,
     )
+
+
+def _build_observation_service() -> Optional[ObservationService]:
+    """Build the production ObservationService (WO-015).
+
+    Constructs ``ObservationService`` (the canonical Event -> Observation
+    component) backed by a session from the canonical
+    ``DatabaseSessionManager`` — the single database owner.  The ``observations``
+    table lives on the shared ``Base.metadata``, so it is created with the same
+    ``create_all`` used by the durable event/entity/checkpoint tables.
+
+    Returns ``None`` when persistence is not active (no session manager), so a
+    runtime-only composition does not force a database to appear — mirroring the
+    other durable lifecycle guards.  When a session manager is configured, a
+    durable observation session is created for the service.  No second engine /
+    sessionmaker / persistence plane is introduced.
+    """
+    if not _session_manager_ready():
+        return None
+    from app.database.session import get_session_manager
+
+    session = get_session_manager().get_session()
+    return ObservationService(event_bus=None, session=session)
 
 
 def _instrument_catch_up(

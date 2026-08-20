@@ -218,7 +218,10 @@ def test_raw_dict_is_rejected(global_session_manager):
     assert plugin.received == []
 
 
-# T8 — Legacy isolation: composition introduces no app.core / EventBus coupling
+# T8 — Legacy isolation: composition introduces no app.core / legacy EventBus
+# coupling. WO-015 wires the CANONICAL EventBus (app.event_bus.event_bus) into
+# production composition, so the guard forbids legacy app.core coupling while
+# explicitly asserting the canonical event-bus + observation migration wiring.
 def test_production_composition_has_no_legacy_coupling():
     import app.composition as composition
 
@@ -229,12 +232,20 @@ def test_production_composition_has_no_legacy_coupling():
     ]
     joined = "\n".join(imports).lower()
 
-    for forbidden in ("app.core", "eventbus", "event_result", "eventresult"):
+    # Forbidden: legacy app.core coupling and legacy event-result coupling.
+    # The canonical event bus lives under app.event_bus (NOT app.core), so
+    # "app.core" is the authoritative legacy-coupling token.
+    for forbidden in ("app.core", "event_result", "eventresult"):
         assert forbidden not in joined, f"forbidden import found: {forbidden}"
 
     # The composition must import the canonical Event / pipeline / dispatcher.
     assert "from app.event_pipeline.event_pipeline import eventpipeline" in joined
     assert "from app.event_dispatcher.plugin_dispatcher import plugindispatcher" in joined
+
+    # WO-015 — composition must import the CANONICAL event bus and the
+    # ObservationService (not the legacy app.core EventBus).
+    assert "from app.event_bus.event_bus import eventbus" in joined
+    assert "from app.observation.service import observationservice" in joined
 
 
 # T9 — No duplicate delivery for a single canonical Event
