@@ -290,7 +290,7 @@ def test_failed_migration_rolls_back_mutation_and_record(memory_rt):
 
     # Revision NOT recorded — database is still at the pre-migration revision
     # (revision 2 = the WO-021/022 target; the probe rev 9999 is NOT applied).
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     assert 9999 not in _migration_records()
     # Mutation rolled back: the probe DATA row is absent (DML is transactional).
     mgr = get_session_manager()
@@ -310,7 +310,7 @@ def test_failed_migration_preserves_prior_schema_and_data(tmp_path):
     configure_session_manager(_url(str(db)))
     # Ensure the WO-022 baseline migration (rev 1 -> 2) is already applied.
     upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     # Register a failing migration and inject failure after its real mutation.
     original = schema_mod.MIGRATIONS
     schema_mod.MIGRATIONS = original + (PROBE_MIGRATION,)
@@ -323,7 +323,7 @@ def test_failed_migration_preserves_prior_schema_and_data(tmp_path):
         schema_mod._FAIL_INJECT_REVISION = None
 
     # Old valid revision retained; no partial migration record; probe row absent.
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     assert 9999 not in _migration_records()
     with get_session_manager().session(commit=False) as s:
         n = s.execute(
@@ -359,7 +359,7 @@ def test_retry_after_failure_recovers_deterministically(memory_rt):
         with pytest.raises(RuntimeError):
             upgrade_schema()
         # rev 1 and 2 applied; the failing probe rev 9999 is NOT recorded.
-        assert get_schema_version() == 2
+        assert get_schema_version() == 3
         assert 9999 not in _migration_records()
 
         # Retry — failure injection now disabled for this migration.

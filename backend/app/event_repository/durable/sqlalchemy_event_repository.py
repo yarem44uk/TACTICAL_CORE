@@ -135,6 +135,104 @@ class SQLAlchemyEventRepository(IEventRepository):
                 session.rollback()
                 return
 
+    def save_with_deliveries(self, event: Event, consumer_ids: List[str]) -> None:
+        """WO-027 — Persist a canonical Event and its outbox delivery records
+        ATOMICALLY in one transaction (transactional outbox).
+
+        The canonical event row AND a PENDING delivery record for every
+        ``consumer_id`` are written and committed together, so there is no
+        valid production state where the event is durable but a contractually
+        required consumer has no durable delivery record.  Delivery itself is
+        performed later by the post-commit ``DurableDeliveryDispatcher``; no
+        consumer side effect runs here.
+
+        Idempotent and conflict-safe:
+          * re-saving an existing ``event_id`` is a no-op (event already
+            durable; any already-created delivery records are preserved by the
+            ``UNIQUE(event_id, consumer_id)`` outbox constraint);
+          * if any enqueued consumer already has a delivery record for this
+            event, that record is preserved (no duplicate delivery state).
+
+        Args:
+            event: canonical ``app.event.event.Event`` to persist.
+            consumer_ids: consumers that contractually receive this event.
+        """
+        from app.event_delivery.outbox_model import DurableDeliveryRecord
+        import uuid as _uuid
+        from datetime import datetime as _datetime, timezone as _timezone
+
+        row = self._to_persistent(event)
+        with self.session_manager.session(commit=True) as session:
+            row.seq = self._next_seq(session)
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError:
+                # Duplicate canonical event_id: the event is already durable.
+                # Preserve the already-created outbox records and treat this as
+                # an idempotent no-op (roll back the failed flush).
+                session.rollback()
+                # Reopen a session to reconcile outbox records (below).
+                with self.session_manager.session(commit=True) as s2:
+                    self._reconcile_deliveries(s2, event.event_id, consumer_ids)
+                return
+            # Fresh event: create PENDING delivery records in the same
+            # transaction.  UNIQUE(event_id, consumer_id) makes accidental
+            # duplicates impossible even if a record already exists.
+            now = _datetime.now(_timezone.utc)
+            for cid in consumer_ids:
+                existing = session.execute(
+                    select(DurableDeliveryRecord).where(
+                        DurableDeliveryRecord.event_id == event.event_id,
+                        DurableDeliveryRecord.consumer_id == cid,
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    session.add(
+                        DurableDeliveryRecord(
+                            id=_uuid.uuid4().hex,
+                            event_id=event.event_id,
+                            consumer_id=cid,
+                            state=DurableDeliveryRecord.PENDING,
+                            attempts=0,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+
+    @staticmethod
+    def _reconcile_deliveries(session: Any, event_id: str, consumer_ids: List[str]) -> None:
+        """Ensure PENDING delivery records exist for every consumer.
+
+        Called on the idempotent re-save path (event already durable) so a
+        consumer added after the original commit still gets a delivery record,
+        while never duplicating existing records (UNIQUE constraint).
+        """
+        from app.event_delivery.outbox_model import DurableDeliveryRecord
+        import uuid as _uuid
+        from datetime import datetime as _datetime, timezone as _timezone
+
+        now = _datetime.now(_timezone.utc)
+        for cid in consumer_ids:
+            existing = session.execute(
+                select(DurableDeliveryRecord).where(
+                    DurableDeliveryRecord.event_id == event_id,
+                    DurableDeliveryRecord.consumer_id == cid,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    DurableDeliveryRecord(
+                        id=_uuid.uuid4().hex,
+                        event_id=event_id,
+                        consumer_id=cid,
+                        state=DurableDeliveryRecord.PENDING,
+                        attempts=0,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
     def save_many(self, events: List[Event]) -> None:
         """
         Persist several canonical Events atomically in one transaction.

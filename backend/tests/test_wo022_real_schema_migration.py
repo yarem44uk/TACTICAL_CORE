@@ -196,21 +196,21 @@ def memory_rt():
 
 
 def test_correct_baseline_revision(memory_rt):
-    """Fresh (un-upgraded) DB starts at revision 0; WO-022 target is 2."""
+    """Fresh (un-upgraded) DB starts at revision 0; WO-027 target is 3."""
     assert get_schema_version() == 0
-    assert TARGET_VERSION == 2
-    assert [m.revision for m in MIGRATIONS] == [1, 2]
-    assert MIGRATIONS[-1].name == "index_durable_events_event_type"
+    assert TARGET_VERSION == 3
+    assert [m.revision for m in MIGRATIONS] == [1, 2, 3]
+    assert MIGRATIONS[-1].name == "durable_delivery_outbox"
 
 
 def test_upgrade_fresh_db_reaches_target(memory_rt):
-    """Fresh DB: upgrade_schema reaches the WO-022 target revision (2)."""
+    """Fresh DB: upgrade_schema reaches the WO-027 target revision (3)."""
     v = upgrade_schema()
-    assert v == 2
-    assert get_schema_version() == 2
+    assert v == 3
+    assert get_schema_version() == 3
     st = get_migration_state()
-    assert st["current_revision"] == 2
-    assert st["target_revision"] == 2
+    assert st["current_revision"] == 3
+    assert st["target_revision"] == 3
     assert st["upgrade_required"] is False
 
 
@@ -431,11 +431,11 @@ def test_populated_old_db_migration_real_delta(tmp_path):
     configure_session_manager(_url(str(db)))
     # The delta is genuinely ABSENT before migration.
     assert EVENT_TYPE_INDEX not in _index_names("durable_canonical_events")
-    # Baseline WO-021 revision present; WO-022 revision-2 pending.
+    # Baseline WO-021 revision present; WO-022/027 revisions pending.
     assert get_schema_version() == 1
     v = upgrade_schema()
-    assert v == 2
-    assert get_schema_version() == 2
+    assert v == 3
+    assert get_schema_version() == 3
 
     # Genuine delta now physically present.
     assert EVENT_TYPE_INDEX in _index_names("durable_canonical_events")
@@ -516,10 +516,10 @@ def test_no_duplicate_rows_after_migration(tmp_path):
 
 def test_repeated_migration_idempotent(memory_rt):
     upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     upgrade_schema()
     upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     # Exactly one migration record per revision (no duplicates).
     from app.database.schema_migration import SchemaMigrationVersion
     from app.database.session import get_session_manager
@@ -527,21 +527,21 @@ def test_repeated_migration_idempotent(memory_rt):
 
     with get_session_manager().session(commit=False) as s:
         rows = s.execute(select(SchemaMigrationVersion.version)).scalars().all()
-    assert sorted(rows) == [1, 2]
-    assert len(rows) == 2
+    assert sorted(rows) == [1, 2, 3]
+    assert len(rows) == 3
 
 
 def test_current_schema_migration_is_noop(tmp_path):
-    """A DB already at revision 2: upgrade_schema is a deterministic no-op."""
+    """A DB already at revision 3: upgrade_schema is a deterministic no-op."""
     db = tmp_path / "cur.db"
     _seed(str(db))
     configure_session_manager(_url(str(db)))
     upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     idx_before = _index_names("durable_canonical_events")
     rows_before = SQLAlchemyEventRepository().count()
     upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
     assert _index_names("durable_canonical_events") == idx_before
     assert SQLAlchemyEventRepository().count() == rows_before
     _reset()

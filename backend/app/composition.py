@@ -73,6 +73,7 @@ from app.entity_relations.sqlalchemy_relation_repository import (
 from app.entity_relations.relation_projection import (
     project_relation_from_event,
 )
+from app.event_delivery.delivery_dispatcher import DurableDeliveryDispatcher
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ class EventRuntime:
     event_bus: Optional["object"] = None
     observation_service: Optional["object"] = None
     relation_repository: Optional["object"] = None
+    delivery_dispatcher: Optional["object"] = None
 
 
 def create_event_runtime(
@@ -516,6 +518,11 @@ def _session_manager_ready() -> bool:
         return False
 
 
+def session_manager_ready() -> bool:
+    """Public wrapper for ``_session_manager_ready`` (WO-027 bootstrap wiring)."""
+    return _session_manager_ready()
+
+
 def _build_durable_entity_repository() -> "SQLAlchemyEntityRepository":
     """Build the durable Entity repository over the single DB owner (WO-014-025).
 
@@ -639,6 +646,47 @@ def _build_observation_service() -> Optional[ObservationService]:
 
     session = get_session_manager().get_session()
     return ObservationService(event_bus=None, session=session)
+
+
+def wire_durable_delivery(
+    *,
+    pipeline: EventPipeline,
+    plugin_dispatcher: PluginDispatcher,
+    event_bus: EventBus,
+    repository: Any,
+) -> DurableDeliveryDispatcher:
+    """WO-027 — wire the durable post-commit delivery dispatcher.
+
+    Builds a ``DurableDeliveryDispatcher`` backed by the single
+    ``DatabaseSessionManager`` (no second DB owner), registers two durable
+    consumers (``"plugins"`` -> ``PluginDispatcher.dispatch`` and
+    ``"observation"`` -> ``event_bus.publish``), initialises the outbox table,
+    and attaches the dispatcher to the pipeline so that ``pipeline.process``
+    atomically commits the canonical event + PENDING outbox records, then
+    delivers to consumers post-commit via the durable outbox.  Each consumer
+    has an independent durable delivery record (AT-LEAST-ONCE, per-consumer
+    state; failure of one never blocks the other).
+    """
+    from app.event_delivery.outbox_repository import SQLAlchemyOutboxRepository
+
+    outbox = SQLAlchemyOutboxRepository()
+    outbox.initialize()
+    dispatcher = DurableDeliveryDispatcher(outbox_repository=outbox)
+
+    def _deliver_plugins(event: Any) -> None:
+        # Post-commit fan-out to every registered + RUNNING plugin.  Each
+        # plugin is individually isolated by PluginManager.deliver_event.
+        plugin_dispatcher.dispatch(event)
+
+    def _deliver_observation(event: Any) -> None:
+        event_bus.publish(event)
+
+    dispatcher.register_consumer("plugins", _deliver_plugins)
+    dispatcher.register_consumer("observation", _deliver_observation)
+
+    pipeline.set_delivery_dispatcher(dispatcher)
+    pipeline.set_outbox_consumer_ids(["plugins", "observation"])
+    return dispatcher
 
 
 def _instrument_catch_up(

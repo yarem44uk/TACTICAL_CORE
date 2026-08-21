@@ -180,7 +180,9 @@ def test_migration_version_table_exists(memory_rt):
 def test_initial_version_is_deterministic(memory_rt):
     upgrade_schema()
     assert get_schema_version() == TARGET_VERSION
-    assert TARGET_VERSION == 2
+    # WO-027 adds a real revision-3 migration (durable delivery outbox), so the
+    # authoritative target revision is now 3 (WO-021/022 = 1/2, WO-027 = 3).
+    assert TARGET_VERSION == 3
 
 
 def test_migration_state_inspectable(memory_rt):
@@ -214,7 +216,7 @@ def test_upgrade_applies_missing_migrations_in_order(memory_rt):
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert sorted(rows) == [1, 2]
+    assert sorted(rows) == [1, 2, 3]
 
 
 def test_repeated_upgrade_is_idempotent_noop(memory_rt):
@@ -231,7 +233,7 @@ def test_repeated_upgrade_is_idempotent_noop(memory_rt):
         after = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert before == after == [1, 2]
+    assert before == after == [1, 2, 3]
     assert get_schema_version() == TARGET_VERSION
 
 
@@ -252,6 +254,7 @@ def test_upgrade_does_not_duplicate_schema_objects(memory_rt):
         "entity_relations",
         "projection_checkpoint",
         "observations",
+        "durable_event_delivery",
     }
 
 
@@ -371,14 +374,14 @@ def test_failed_migration_not_recorded(memory_rt, monkeypatch):
     with pytest.raises(RuntimeError, match="simulated migration failure"):
         upgrade_schema()
 
-    # The failed revision must NOT be recorded; revisions 1 and 2 succeeded.
-    assert get_schema_version() == 2
+    # The failed revision must NOT be recorded; revisions 1, 2 and 3 succeeded.
+    assert get_schema_version() == 3
     mgr = get_session_manager()
     with mgr.session(commit=False) as session:
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert rows == [1, 2]
+    assert rows == [1, 2, 3]
 
 
 def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
@@ -397,7 +400,7 @@ def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
 
     with pytest.raises(RuntimeError, match="transient failure"):
         upgrade_schema()
-    assert get_schema_version() == 2
+    assert get_schema_version() == 3
 
     # Retry completes deterministically and records the higher revision.
     upgrade_schema()
@@ -407,7 +410,7 @@ def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert rows == [1, 2, 99]
+    assert rows == [1, 2, 3, 99]
 
 
 # ---------------------------------------------------------------------------

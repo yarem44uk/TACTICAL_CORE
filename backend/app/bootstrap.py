@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.composition import EventRuntime, create_event_runtime
+from app.composition import session_manager_ready, wire_durable_delivery
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_sources.factory.event_factory import EventFactory
 from app.event_sources.identity.event_identity import EventIdentityResolver
@@ -75,6 +76,9 @@ class ProductionRuntime:
     event_factory: EventFactory
     supervisor: AdapterSupervisor
     started: bool = False
+    # WO-027 — durable post-commit delivery dispatcher (None when the session
+    # manager is not configured / runtime-only composition).
+    delivery_dispatcher: Optional["object"] = None
 
     # --- Convenience access to the canonical Event -> Plugin path ---------
 
@@ -271,10 +275,36 @@ def create_production_runtime(
         A ``ProductionRuntime`` handle ready for ``add_source`` / ``start``.
     """
     event_runtime = create_event_runtime(plugin_manager=plugin_manager)
+
+    # WO-027 — durable post-commit delivery (transactional outbox).
+    #
+    # When the canonical DatabaseSessionManager is configured (real
+    # production), the authoritative production runtime is wired with a
+    # durable delivery dispatcher: the pipeline atomically commits each
+    # canonical event AND its PENDING outbox delivery records in one
+    # transaction, then delivers to consumers STRICTLY AFTER the commit.  No
+    # consumer side effect (plugin, event bus, observation) runs before the
+    # durable commit.  Delivery is AT-LEAST-ONCE with durable per-consumer
+    # state and canonical event_id idempotency.
+    #
+    # When no session manager is configured (runtime-only bootstrap tests),
+    # the legacy in-process path remains in place so runtime-only unit tests
+    # are unaffected — real production always configures the single
+    # DatabaseSessionManager.
+    delivery_dispatcher = None
+    if session_manager_ready():
+        delivery_dispatcher = wire_durable_delivery(
+            pipeline=event_runtime.pipeline,
+            plugin_dispatcher=event_runtime.plugin_dispatcher,
+            event_bus=event_runtime.event_bus,
+            repository=event_runtime.event_service._repository,
+        )
+
     factory = EventFactory(identity_resolver=EventIdentityResolver())
     supervisor = AdapterSupervisor(factory, event_runtime.pipeline)
     return ProductionRuntime(
         event_runtime=event_runtime,
         event_factory=factory,
         supervisor=supervisor,
+        delivery_dispatcher=delivery_dispatcher,
     )

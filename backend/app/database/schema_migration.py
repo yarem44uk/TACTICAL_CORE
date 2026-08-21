@@ -159,6 +159,70 @@ def _index_durable_events_event_type(manager: DatabaseSessionManager, session: "
     )
 
 
+def _durable_delivery_outbox(manager: DatabaseSessionManager, session: "Session") -> None:
+    """Revision-3 operation: create the WO-027 durable delivery outbox table.
+
+    WO-027 — transactional outbox for durable post-commit event delivery.
+
+    This migration creates the ``durable_event_delivery`` table (one durable,
+    per-consumer delivery record per canonical event) on the SINGLE existing
+    ``DatabaseSessionManager`` owner.  It is a real, deterministic, idempotent,
+    crash-safe schema delta executed through the WO-021 engine:
+
+      * DETERMINISTIC / IDEMPOTENT — ``CREATE TABLE IF NOT EXISTS`` makes a
+        repeated run a safe no-op; no duplicate table or delivery state can be
+        created.
+      * ATOMIC — the DDL runs inside the SAME transaction as the revision
+        record; operation + record commit together and roll back together.
+      * NON-DESTRUCTIVE — it adds a new auxiliary table only; no existing
+        column, table, row, identity, lifecycle, relation, or replay behaviour
+        is altered.
+      * SINGLE OWNER — it runs through the SAME ``DatabaseSessionManager`` that
+        owns every other durable table (INVARIANT: no second engine,
+        sessionmaker, or DB lifecycle).
+      * CRASH-SAFE — WO-024 conventions: a process crash before the revision
+        transaction commits rolls the table creation back (the revision is not
+        recorded); a crash after commit leaves the table durable and idempotent.
+
+    The outbox columns and the ``UNIQUE(event_id, consumer_id)`` delivery
+    idempotency boundary are declared on ``DurableDeliveryRecord``
+    (``app.event_delivery.outbox_model``); ``Base.metadata.create_all`` keeps a
+    fresh-schema bootstrap in sync, and this migration guarantees the table on
+    pre-existing databases.
+    """
+    from sqlalchemy import text as _text
+
+    session.execute(
+        _text(
+            "CREATE TABLE IF NOT EXISTS durable_event_delivery ("
+            "  id VARCHAR(36) NOT NULL, "
+            "  event_id VARCHAR(36) NOT NULL, "
+            "  consumer_id VARCHAR(100) NOT NULL, "
+            "  state VARCHAR(20) NOT NULL, "
+            "  attempts INTEGER NOT NULL, "
+            "  last_error VARCHAR(500), "
+            "  created_at DATETIME NOT NULL, "
+            "  updated_at DATETIME NOT NULL, "
+            "  PRIMARY KEY (id), "
+            "  CONSTRAINT uq_durable_event_delivery_event_consumer "
+            "    UNIQUE (event_id, consumer_id)"
+            ")"
+        )
+    )
+    session.execute(
+        _text(
+            "CREATE INDEX IF NOT EXISTS ix_durable_event_delivery_state "
+            "ON durable_event_delivery (state)"
+        )
+    )
+    session.execute(
+        _text(
+            "CREATE INDEX IF NOT EXISTS ix_durable_event_delivery_event "
+            "ON durable_event_delivery (event_id)"
+        )
+    )
+
+
 # Ordered ascending by revision — the ONLY ordering authority.
 # To add a future revision, append a new Migration with a higher revision
 # number here.  Do not renumber or reorder existing entries.
@@ -168,6 +232,11 @@ MIGRATIONS: Tuple[Migration, ...] = (
         revision=2,
         name="index_durable_events_event_type",
         migrate=_index_durable_events_event_type,
+    ),
+    Migration(
+        revision=3,
+        name="durable_delivery_outbox",
+        migrate=_durable_delivery_outbox,
     ),
 )
 
