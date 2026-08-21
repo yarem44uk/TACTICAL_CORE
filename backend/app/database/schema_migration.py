@@ -279,6 +279,63 @@ def _is_sqlite_locked(exc: BaseException) -> bool:
 # can accidentally trigger it.
 _FAIL_INJECT_REVISION: Optional[int] = None
 
+# WO-024 test-only process-crash instrumentation.  Disabled by default.
+#
+# A REAL process crash — as opposed to a Python exception — is required to
+# prove the migration durability boundary across an actual OS process boundary
+# (WO-024).  When the WO-024 crash-recovery tests execute the migration engine
+# in a child process they set these environment variables:
+#
+#   WO_CRASH_AT_REVISION=<int>  — only the migration whose revision matches may
+#                                  hard-terminate the process
+#   WO_CRASH_MODE=before_commit  — crash after the migration-side mutation has
+#                                  run but BEFORE the revision transaction
+#                                  commits (Boundary A)
+#   WO_CRASH_MODE=after_commit   — crash AFTER the migration transaction has
+#                                  successfully committed, before normal process
+#                                  exit (Boundary B)
+#
+# When enabled at the matching boundary the engine calls ``os._exit(137)``,
+# which terminates the process immediately WITHOUT running Python cleanup,
+# ``finally`` handlers, or flushing buffered output — simulating abrupt
+# OS-level process death.  In normal production neither variable is set, so
+# this code path is entirely inert (disabled by default and impossible to
+# trigger accidentally).  It never creates a second database owner and never
+# bypasses the real transaction boundary — it fires at an actual boundary.
+_CRASH_AT_REVISION: Optional[int] = None
+_CRASH_MODE: Optional[str] = None
+
+
+def _load_crash_hook() -> None:
+    """Read the test-only crash instrumentation from the environment."""
+    global _CRASH_AT_REVISION, _CRASH_MODE
+    import os as _os
+
+    raw = _os.environ.get("WO_CRASH_AT_REVISION")
+    _CRASH_AT_REVISION = int(raw) if raw is not None else None
+    _CRASH_MODE = _os.environ.get("WO_CRASH_MODE")
+
+
+_load_crash_hook()
+
+
+def _maybe_crash(migration: Migration, boundary: str) -> None:
+    """Hard-terminate the process at a real transaction boundary (test-only).
+
+    Only fires when the WO-024 test explicitly arms it via the environment for
+    the exact revision and boundary.  ``os._exit`` bypasses Python teardown so
+    the process dies as if by a real crash, leaving SQLite to recover the
+    transaction boundary via its journal on the next open.
+    """
+    if (
+        _CRASH_AT_REVISION is not None
+        and _CRASH_AT_REVISION == migration.revision
+        and _CRASH_MODE == boundary
+    ):
+        import os as _os
+
+        _os._exit(137)
+
 
 def _apply_migration(
     manager: DatabaseSessionManager,
@@ -346,6 +403,11 @@ def _apply_migration(
                         f"WO-023 injected failure for migration revision "
                         f"{migration.revision}"
                     )
+                # WO-024 Boundary A: the migration-side mutation has run but the
+                # revision transaction has NOT yet committed.  A real process
+                # crash here must leave the DB at the previous valid revision
+                # with the mutation rolled back (test-only; inert in prod).
+                _maybe_crash(migration, "before_commit")
                 session.add(
                     SchemaMigrationVersion(
                         version=migration.revision,
@@ -400,6 +462,11 @@ def upgrade_schema(
     for migration in pending:
         if _apply_migration(manager, migration):
             applied = migration.revision
+            # WO-024 Boundary B: the migration transaction has successfully
+            # committed, but the process has not yet exited normally.  A real
+            # process crash here must leave the committed migration durable
+            # (test-only; inert in prod).
+            _maybe_crash(migration, "after_commit")
 
     # Return the AUTHORITATIVE current revision actually persisted, not an
     # optimistic local counter.  Under concurrency a losing caller may observe
