@@ -17,6 +17,7 @@ from app.event.event import Event
 from app.event.event_metadata import EventMetadata
 from app.event.event_types import EventType
 
+from ..identity.event_identity import EventIdentityResolver
 from ..interfaces.i_event_factory import IEventFactory
 
 
@@ -27,11 +28,26 @@ class EventFactory(IEventFactory):
     - Normalize timestamps to UTC
     - Attach source identification
     - Preserve protocol-specific metadata without leaking structure
+    - Resolve a deterministic canonical ``event_id`` (WO-025) when an identity
+      resolver is configured and a stable identity can be derived
     - Return immutable Event instances (frozen dataclass)
 
     The resulting Event is fully compatible with WO-012 Event Processing Layer,
     Event Pipeline, Event Filter, Event Dispatcher, and Event Repository.
     """
+
+    def __init__(self, identity_resolver: EventIdentityResolver | None = None):
+        """Create an EventFactory.
+
+        Args:
+            identity_resolver: Optional WO-025 identity resolver.  When set, a
+                deterministic canonical ``event_id`` is derived from the raw
+                source message and source name so duplicate deliveries of the
+                same logical message map to the same durable identity.  When
+                ``None`` (default), ``Event.event_id``'s UUID4 default is used
+                (full backward compatibility; non-deduplicable).
+        """
+        self._identity_resolver = identity_resolver
 
     def create_event(
         self,
@@ -39,6 +55,7 @@ class EventFactory(IEventFactory):
         source_name: str,
         event_type: EventType | None = None,
         metadata: dict[str, Any] | None = None,
+        event_id: str | None = None,
     ) -> Event:
         """Create a canonical Event from raw source data.
 
@@ -47,6 +64,10 @@ class EventFactory(IEventFactory):
             source_name: Name of the source adapter.
             event_type: Explicit event type. Falls back to EventType.CUSTOM.
             metadata: Optional additional metadata.
+            event_id: Explicit canonical event identity. When provided it takes
+                precedence. Otherwise a deterministic identity is resolved via
+                the configured resolver (WO-025); if neither yields an identity,
+                ``Event.event_id``'s UUID4 default is used.
 
         Returns:
             A canonical Event instance compatible with WO-012.
@@ -64,6 +85,24 @@ class EventFactory(IEventFactory):
         if event_type is None:
             event_type = EventType.CUSTOM
 
+        resolved_event_id = event_id
+        if resolved_event_id is None and self._identity_resolver is not None:
+            resolved_event_id = self._identity_resolver.resolve(
+                raw_data, source_name
+            )
+
+        if resolved_event_id is not None:
+            return Event(
+                event_id=resolved_event_id,
+                event_type=event_type,
+                timestamp=timestamp,
+                source=source_name,
+                payload=event_data,
+                metadata=event_metadata,
+            )
+
+        # No explicit / resolved identity: rely on Event.event_id's UUID4
+        # default (non-deduplicable).
         return Event(
             event_type=event_type,
             timestamp=timestamp,

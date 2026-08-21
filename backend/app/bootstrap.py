@@ -52,6 +52,7 @@ from typing import Optional
 from app.composition import EventRuntime, create_event_runtime
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_sources.factory.event_factory import EventFactory
+from app.event_sources.identity.event_identity import EventIdentityResolver
 from app.event_sources.interfaces.i_event_source_adapter import IEventSourceAdapter
 from app.event_sources.runtime.adapter_supervisor import AdapterSupervisor
 from app.event_sources.runtime.runtime_health import SourceSnapshot, source_snapshot
@@ -270,7 +271,7 @@ def create_production_runtime(
         A ``ProductionRuntime`` handle ready for ``add_source`` / ``start``.
     """
     event_runtime = create_event_runtime(plugin_manager=plugin_manager)
-    factory = EventFactory()
+    factory = EventFactory(identity_resolver=EventIdentityResolver())
     supervisor = AdapterSupervisor(factory, event_runtime.pipeline)
     return ProductionRuntime(
         event_runtime=event_runtime,

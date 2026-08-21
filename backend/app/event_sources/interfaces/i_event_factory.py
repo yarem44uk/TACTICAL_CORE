@@ -35,6 +35,7 @@ class IEventFactory(ABC):
         source_name: str,
         event_type: EventType | None = None,
         metadata: dict[str, Any] | None = None,
+        event_id: str | None = None,
     ) -> Event:
         """Create a canonical Event from raw source data.
 
@@ -43,6 +44,8 @@ class IEventFactory(ABC):
             source_name: Name of the source adapter that provided the data.
             event_type: Explicit event type. Falls back to EventType.CUSTOM.
             metadata: Optional additional metadata to attach to the event.
+            event_id: Optional explicit canonical event identity (WO-025). When
+                provided it takes precedence over any resolver-derived identity.
 
         Returns:
             A canonical Event instance from the WO-012 Event Layer.
