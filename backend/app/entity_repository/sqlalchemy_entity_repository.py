@@ -153,6 +153,34 @@ class SQLAlchemyEntityRepository(IRepository):
             row.status = "DELETED"
             return True
 
+    def tombstone(self, entity_id: UUID | str) -> bool:
+        """WO-017 / ADR-ENTITY-RELATION-LIFECYCLE — durable entity TOMBSTONE transition.
+
+        Transitions the entity ACTIVE -> TOMBSTONED.  This is a terminal,
+        DURABLE lifecycle transition (NOT physical deletion): the row is
+        retained with ``status = TOMBSTONED`` and ``deleted_at`` set, so it
+        remains reconstructable from the durable event log but is excluded
+        from active reads.
+
+        Idempotent: an already-tombstoned (or already-deleted) entity is a
+        no-op (returns False).  Non-reactivating in v1.
+        """
+        with self.session_manager.session(commit=True) as session:
+            row = session.get(EntityRecord, str(entity_id))
+            if row is None or row.deleted_at is not None:
+                return False
+            row.deleted_at = self._now()
+            row.status = "TOMBSTONED"
+            return True
+
+    def is_tombstoned(self, entity_id: UUID | str) -> bool:
+        """Return True if the entity is durably tombstoned (or deleted)."""
+        with self.session_manager.session(commit=False) as session:
+            row = session.get(EntityRecord, str(entity_id))
+            if row is None:
+                return False
+            return row.deleted_at is not None
+
     def list_all(self, entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
         from sqlalchemy import select
 

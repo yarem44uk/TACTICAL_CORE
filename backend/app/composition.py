@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from app.event.event import Event  # noqa: F401  (public type re-export)
+from app.event.event_types import EventType
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_dispatcher.plugin_dispatcher import PluginDispatcher
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
@@ -220,13 +221,56 @@ def create_event_runtime(
 
     def _composite_projection(event: Any) -> None:
         # Entity projection first (existing behavior), then durable relation
-        # projection (WO-016).  Both are best-effort and isolated.
+        # projection (WO-016), then the WO-017 lifecycle cascade.  All are
+        # best-effort and isolated; a failure in one never rolls back the
+        # already-durable canonical Event.
         _project_event_to_entity(entity_bridge)(event)
         relation_projector(event)
+        _project_entity_lifecycle(event)
 
     pipeline.set_projection(
         projection_observability.wrap(_composite_projection)
     )
+
+    def _project_entity_lifecycle(event: Any) -> None:
+        """WO-017 / ADR-ENTITY-RELATION-LIFECYCLE — deterministic entity-deactivation lifecycle.
+
+        On the canonical ``ENTITY_REMOVED`` event, the referenced entity is
+        durably TOMBSTONED (ACTIVE -> TOMBSTONED, no physical delete) and the
+        entity-deactivation cascade inactivates (ACTIVE -> INACTIVE) every
+        canonical relation referencing that entity.
+
+        Lifecycle semantics (ratified ADR-ENTITY-RELATION-LIFECYCLE):
+          * terminal states; no reactivation; no SUPERSEDED; no temporal
+            validity; no explicit relation severance; no new EventType.
+          * synchronous, deterministic, idempotent, replayable.
+          * independent persistence transactions (consistent with the
+            verified EVENT/ENTITY/RELATION independent-TX architecture) —
+            never a single implicit atomic transaction.
+          * best-effort: a failure is logged and never propagates, so it can
+            never roll back or prevent the already-durable canonical Event.
+
+        ``entity_id`` is the canonical ``Event.entity_id`` (Entity identity,
+        distinct from ``Event.event_id``).  Events without an ``entity_id``
+        are skipped deterministically.
+        """
+        try:
+            if getattr(event, "event_type", None) != EventType.ENTITY_REMOVED:
+                return
+            entity_id = getattr(event, "entity_id", None)
+            if not entity_id:
+                return
+            entity_repository.tombstone(str(entity_id))
+            relation_repository.inactivate_for_entity(str(entity_id))
+        except Exception:  # noqa: BLE001 - best-effort by design
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "WO-017 entity lifecycle cascade failed (best-effort, "
+                "not propagating). event_id=%s entity_id=%s",
+                getattr(event, "event_id", None),
+                getattr(event, "entity_id", None),
+            )
 
     # WO-014-025 — deterministic catch-up driver over the durable event log.
     # Wired so an embedding application can run catch-up on startup/interval.

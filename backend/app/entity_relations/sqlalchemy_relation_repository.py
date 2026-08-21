@@ -18,6 +18,12 @@ Architectural contract (Durable Relation Projection):
     duplicate canonical-Event processing idempotent at the database level.
   * ``save()`` is an idempotent upsert keyed on ``relation_id``: reprocessing
     the same canonical Event never creates a duplicate relation row.
+  * WO-017 (ADR-ENTITY-RELATION-LIFECYCLE) durable relation lifecycle: ``status`` is ACTIVE (default)
+    or INACTIVE (terminal).  Lifecycle is MUTABLE state on the SAME
+    deterministic ``relation_id`` — it is never part of identity, and
+    transitions never physically delete the row (historical preservation).
+    ``inactivate_for_entity()`` implements the synchronous, deterministic,
+    idempotent entity-deactivation cascade.
   * ``lock()`` returns a module-level :class:`threading.RLock` guarding
     read-modify-write cycles; actual transaction isolation is provided by the
     shared DatabaseSessionManager.
@@ -84,6 +90,17 @@ class RelationRecord(Base):
     relation_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         "metadata", JSON, nullable=True
     )
+    # WO-017 (ADR-ENTITY-RELATION-LIFECYCLE) — durable lifecycle state.  ``status`` is the terminal
+    # relation lifecycle: ACTIVE (default) or INACTIVE (terminal).  ``status``
+    # is MUTABLE state on the SAME deterministic ``relation_id`` — it is NOT
+    # part of relation identity.  Lifecycle transitions never physically delete
+    # the row (historical preservation).
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="ACTIVE", index=True
+    )
+    terminated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -91,6 +108,10 @@ class RelationRecord(Base):
         DateTime(timezone=True), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+
 
 
 class SQLAlchemyRelationRepository(IRelationRepository):
@@ -122,6 +143,10 @@ class SQLAlchemyRelationRepository(IRelationRepository):
             "confidence": row.confidence,
             "source_event_id": row.source_event_id,
             "metadata": dict(row.relation_metadata or {}),
+            "status": row.status,
+            "terminated_at": (
+                row.terminated_at.isoformat() if row.terminated_at else None
+            ),
             "created_at": (
                 row.created_at.isoformat() if row.created_at else None
             ),
@@ -159,6 +184,10 @@ class SQLAlchemyRelationRepository(IRelationRepository):
                     else existing.source_event_id
                 )
                 existing.relation_metadata = dict(data.get("metadata", {}))
+                # Lifecycle state is MUTABLE on the deterministic identity: an
+                # existing relation keeps its current status (e.g. INACTIVE is
+                # never silently resurrected by a re-projected creation event).
+                existing.status = existing.status or RelationRecord.ACTIVE
                 existing.updated_at = now
                 existing.version = int(data.get("version", existing.version + 1))
             else:
@@ -175,6 +204,7 @@ class SQLAlchemyRelationRepository(IRelationRepository):
                             else None
                         ),
                         relation_metadata=dict(data.get("metadata", {})),
+                        status=RelationRecord.ACTIVE,
                         created_at=now,
                         updated_at=now,
                         version=int(data.get("version", 1)),
@@ -189,12 +219,60 @@ class SQLAlchemyRelationRepository(IRelationRepository):
             return self._row_to_dict(row)
 
     def delete(self, relation_id: str | UUID) -> bool:
+        """Explicit-administrative PURGE only.
+
+        WO-017 / ADR-ENTITY-RELATION-LIFECYCLE: lifecycle transitions (ACTIVE -> INACTIVE) are durable
+        state changes and MUST NOT use physical deletion.  ``delete()`` is
+        retained solely for explicit administrative purge and is never invoked
+        by the lifecycle/cascade path.
+        """
         with self.session_manager.session(commit=True) as session:
             row = session.get(RelationRecord, str(relation_id))
             if row is None:
                 return False
             session.delete(row)
             return True
+
+    def inactivate_for_entity(self, entity_id: str | UUID) -> int:
+        """Deterministic entity-deactivation CASCADE (WO-017 / ADR-ENTITY-RELATION-LIFECYCLE).
+
+        When an entity transitions to a terminal (TOMBSTONED) state, all
+        canonical relations referencing that entity (as source OR target)
+        transition ACTIVE -> INACTIVE.  This is:
+
+          * synchronous / projection-time;
+          * deterministic and idempotent — only ACTIVE rows are touched;
+          * durable — the rows are updated in place, never physically deleted;
+          * non-reactivating — INACTIVE is terminal in v1.
+
+        Uses the single DatabaseSessionManager owner (independent transaction,
+        consistent with the verified EVENT/ENTITY/RELATION independent-TX
+        architecture).  Returns the number of relations inactivated.
+        """
+        from sqlalchemy import or_, select
+
+        eid = str(entity_id)
+        now = self._now()
+        count = 0
+        with self.session_manager.session(commit=True) as session:
+            stmt = (
+                select(RelationRecord)
+                .where(
+                    or_(
+                        RelationRecord.source_entity_id == eid,
+                        RelationRecord.target_entity_id == eid,
+                    )
+                )
+                .where(RelationRecord.status == RelationRecord.ACTIVE)
+            )
+            rows = list(session.execute(stmt).scalars().all())
+            for row in rows:
+                row.status = RelationRecord.INACTIVE
+                row.terminated_at = now
+                row.updated_at = now
+                row.version = row.version + 1
+                count += 1
+        return count
 
     def list_all(self) -> List[Dict[str, Any]]:
         from sqlalchemy import select
@@ -207,7 +285,20 @@ class SQLAlchemyRelationRepository(IRelationRepository):
             rows = list(session.execute(stmt).scalars().all())
         return [self._row_to_dict(r) for r in rows]
 
-    def list_for_entity(self, entity_id: str | UUID) -> List[Dict[str, Any]]:
+    def list_for_entity(
+        self,
+        entity_id: str | UUID,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List relations involving a specific entity.
+
+        Args:
+            entity_id: The entity identity.
+            status: Optional lifecycle filter (``ACTIVE`` / ``INACTIVE``).  When
+                ``None``, ALL relations (active + inactive) for the entity are
+                returned (historical view).  When ``ACTIVE``, only currently
+                active relations are returned (read-side active view).
+        """
         from sqlalchemy import or_, select
 
         eid = str(entity_id)
@@ -220,10 +311,32 @@ class SQLAlchemyRelationRepository(IRelationRepository):
                         RelationRecord.target_entity_id == eid,
                     )
                 )
-                .order_by(RelationRecord.relation_type.asc())
+            )
+            if status is not None:
+                stmt = stmt.where(RelationRecord.status == str(status))
+            stmt = stmt.order_by(RelationRecord.relation_type.asc())
+            rows = list(session.execute(stmt).scalars().all())
+        return [self._row_to_dict(r) for r in rows]
+
+    def list_active(self) -> List[Dict[str, Any]]:
+        """List only currently-ACTIVE relations (read-side active view)."""
+        from sqlalchemy import select
+
+        with self.session_manager.session(commit=False) as session:
+            stmt = (
+                select(RelationRecord)
+                .where(RelationRecord.status == RelationRecord.ACTIVE)
+                .order_by(
+                    RelationRecord.source_entity_id.asc(),
+                    RelationRecord.target_entity_id.asc(),
+                )
             )
             rows = list(session.execute(stmt).scalars().all())
         return [self._row_to_dict(r) for r in rows]
+
+    def list_historical(self) -> List[Dict[str, Any]]:
+        """List ALL relations (active + inactive) — historical view."""
+        return self.list_all()
 
     def lock(self) -> threading.RLock:
         """Expose a process-wide lock for atomic read-modify-write cycles."""
