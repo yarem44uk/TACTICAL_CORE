@@ -108,11 +108,58 @@ def _bootstrap_current_schema(manager: DatabaseSessionManager) -> None:
     Base.metadata.create_all(bind=manager.engine)
 
 
+def _index_durable_events_event_type(manager: DatabaseSessionManager) -> None:
+    """Revision-2 operation: add a durable index on ``event_type``.
+
+    WO-022 — REAL schema evolution on top of the WO-021 engine.
+
+    The durable canonical-events repository exposes the production
+    ``list_by_type`` query (``IEventRepository`` contract) which filters on
+    ``DurableCanonicalEvent.event_type``.  Historically that column was
+    UNINDEXED (the table carried indexes only on ``event_id`` and ``seq``).
+    This migration performs a genuine OLD → NEW schema delta: it creates the
+    ``ix_durable_canonical_events_event_type`` index on an existing,
+    potentially populated ``durable_canonical_events`` table.
+
+    Properties:
+      * REAL DDL — executed with ``CREATE INDEX IF NOT EXISTS`` against the
+        existing single ``DatabaseSessionManager`` engine.  It is NOT a
+        ``create_all()`` bootstrap: ``create_all`` would never add this index
+        to an already-existing table.
+      * Deterministic / idempotent — ``IF NOT EXISTS`` makes a repeated run a
+        safe no-op; no duplicate index can be created.
+      * Non-destructive — it adds an index only; no column, table, row,
+        identity, lifecycle, relation, or replay behaviour is altered.
+      * Single owner — it runs through the SAME ``DatabaseSessionManager``
+        that owns every other durable table (INVARIANT: no second engine,
+        sessionmaker, or DB lifecycle).
+
+    The ORM model declares ``index=True`` on ``event_type`` so fresh-schema
+    bootstrap (``create_all``) stays in sync with the migrated schema; this
+    migration guarantees the index is present on pre-existing databases.
+    """
+    from sqlalchemy import text
+
+    with manager.engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_durable_canonical_events_event_type "
+                "ON durable_canonical_events (event_type)"
+            )
+        )
+
+
 # Ordered ascending by revision — the ONLY ordering authority.
 # To add a future revision, append a new Migration with a higher revision
 # number here.  Do not renumber or reorder existing entries.
 MIGRATIONS: Tuple[Migration, ...] = (
     Migration(revision=1, name="bootstrap_current_schema", migrate=_bootstrap_current_schema),
+    Migration(
+        revision=2,
+        name="index_durable_events_event_type",
+        migrate=_index_durable_events_event_type,
+    ),
 )
 
 # The highest revision the registry knows how to apply.

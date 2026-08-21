@@ -83,7 +83,12 @@ class DurableCanonicalEvent(Base):
     )
 
     entity_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    # WO-022 — index on event_type: the durable repository exposes the
+    # production ``list_by_type`` query (IEventRepository contract) which
+    # filters on ``event_type``.  Previously unindexed; the WO-022 migration
+    # adds this index (``ix_durable_canonical_events_event_type``) on existing
+    # databases, and the ORM declaration keeps fresh-schema bootstrap in sync.
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
