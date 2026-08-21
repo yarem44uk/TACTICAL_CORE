@@ -31,6 +31,7 @@ from app.entity_relations.sqlalchemy_relation_repository import (
     deterministic_relation_id,
 )
 from app.entity_relations.interfaces.i_relation_repository import IRelationRepository
+from app.event.event_types import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,16 @@ def project_relation_from_event(
     projection = RelationProjection(repository=repository)
 
     def project(event: Any) -> None:
+        # WO-018 — A RELATION_SEVERED event must NOT create a new relation.
+        # It is an explicit operator/system command that severs an EXISTING
+        # relation; relation CREATION is handled by the WO-016 projection, and
+        # severance (ACTIVE -> INACTIVE) is handled by the WO-018 severance
+        # step.  Allowing the generic relation projector to persist a relation
+        # from a severance event would create a spurious durable row (and would
+        # violate the WO-018 contract that "the event does not create a new
+        # relation identity").  We therefore skip relation creation here.
+        if getattr(event, "event_type", None) == EventType.RELATION_SEVERED:
+            return
         payload = dict(getattr(event, "payload", None) or {})
         source_entity_id = getattr(event, "entity_id", None)
         target_entity_id = payload.get("target_entity_id") or payload.get(

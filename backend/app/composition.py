@@ -68,6 +68,7 @@ from app.event_bus.event_bus import EventBus
 from app.observation.service import ObservationService
 from app.entity_relations.sqlalchemy_relation_repository import (
     SQLAlchemyRelationRepository,
+    deterministic_relation_id,
 )
 from app.entity_relations.relation_projection import (
     project_relation_from_event,
@@ -221,12 +222,14 @@ def create_event_runtime(
 
     def _composite_projection(event: Any) -> None:
         # Entity projection first (existing behavior), then durable relation
-        # projection (WO-016), then the WO-017 lifecycle cascade.  All are
-        # best-effort and isolated; a failure in one never rolls back the
-        # already-durable canonical Event.
+        # projection (WO-016), then the WO-017 lifecycle cascade, then the
+        # WO-018 explicit relation severance.  All are best-effort and
+        # isolated; a failure in one never rolls back the already-durable
+        # canonical Event.
         _project_event_to_entity(entity_bridge)(event)
         relation_projector(event)
         _project_entity_lifecycle(event)
+        _project_relation_severance(event)
 
     pipeline.set_projection(
         projection_observability.wrap(_composite_projection)
@@ -270,6 +273,69 @@ def create_event_runtime(
                 "not propagating). event_id=%s entity_id=%s",
                 getattr(event, "event_id", None),
                 getattr(event, "entity_id", None),
+            )
+
+    def _project_relation_severance(event: Any) -> None:
+        """WO-018 — Explicit canonical relation severance projection.
+
+        On the canonical ``RELATION_SEVERED`` event, transition EXACTLY ONE
+        deterministic relation ``ACTIVE -> INACTIVE`` (durable terminal),
+        identified by the canonical deterministic ``relation_id`` derived from
+        the event's relation triple.
+
+        Architectural contract (WO-018 — Explicit Relation Severance):
+          * affects ONLY the identified relation — it NEVER mutates either
+            endpoint entity lifecycle state and NEVER cascades to other
+            relations;
+          * distinct from ``ENTITY_REMOVED`` (WO-017), which tombstones an
+            entity and cascades to all its relations;
+          * idempotent — reprocessing the same severance event is a safe
+            no-op (already-INACTIVE relations are untouched);
+          * durable — the row is updated in place through the single
+            ``DatabaseSessionManager`` owner (no physical delete, no second
+            DB/session owner);
+          * deterministic identity — uses ``deterministic_relation_id``;
+            the ``relation_id`` is never changed and never reactivated
+            (INACTIVE is terminal in v1);
+          * best-effort — a failure is logged and swallowed, so it can never
+            roll back or prevent the already-durable canonical Event.
+
+        The relation triple is read deterministically from the canonical
+        payload (``source_entity_id`` [or ``event.entity_id``],
+        ``target_entity_id`` / ``related_entity_id``, ``relation_type``),
+        matching the established WO-016 relation-projection field contract.
+        """
+        try:
+            if getattr(event, "event_type", None) != EventType.RELATION_SEVERED:
+                return
+            payload = dict(getattr(event, "payload", None) or {})
+            source_entity_id = payload.get("source_entity_id") or getattr(
+                event, "entity_id", None
+            )
+            target_entity_id = payload.get("target_entity_id") or payload.get(
+                "related_entity_id"
+            )
+            relation_type = payload.get("relation_type")
+            if not source_entity_id or not target_entity_id or not relation_type:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "WO-018 relation severance skipped (missing relation "
+                    "triple). event_id=%s",
+                    getattr(event, "event_id", None),
+                )
+                return
+            relation_id = deterministic_relation_id(
+                source_entity_id, target_entity_id, relation_type
+            )
+            relation_repository.sever_relation(relation_id)
+        except Exception:  # noqa: BLE001 - best-effort by design
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "WO-018 relation severance failed (best-effort, "
+                "not propagating). event_id=%s",
+                getattr(event, "event_id", None),
             )
 
     # WO-014-025 — deterministic catch-up driver over the durable event log.

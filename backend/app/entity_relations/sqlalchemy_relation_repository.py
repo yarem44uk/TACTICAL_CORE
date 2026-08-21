@@ -274,6 +274,51 @@ class SQLAlchemyRelationRepository(IRelationRepository):
                 count += 1
         return count
 
+    def sever_relation(self, relation_id: str | UUID) -> bool:
+        """WO-018 — Explicit canonical relation severance (ACTIVE -> INACTIVE).
+
+        Sever exactly ONE deterministic relation identified by ``relation_id``.
+        This is an explicit, operator/system-level severance that is
+        architecturally distinct from the WO-017 entity-deactivation cascade:
+
+          * it affects ONLY the identified relation;
+          * it NEVER mutates either endpoint entity lifecycle state;
+          * it NEVER cascades to other relations;
+          * it never physically deletes the row (durable terminal INACTIVE).
+
+        Semantics:
+          * deterministic — operates on the authoritative deterministic
+            ``relation_id``;
+          * idempotent — if the relation is already INACTIVE or does not exist,
+            the operation is a safe no-op (returns False);
+          * durable — the row is updated in place through the single
+            ``DatabaseSessionManager`` owner (independent transaction,
+            consistent with the verified EVENT/ENTITY/RELATION independent-TX
+            architecture);
+          * non-reactivating — INACTIVE is terminal in v1; no ACTIVE transition
+            is introduced.
+
+        Returns ``True`` if an ACTIVE relation was transitioned to INACTIVE,
+        ``False`` if it was already INACTIVE, missing, or a no-op.
+        """
+        from sqlalchemy import select
+
+        rid = str(relation_id)
+        now = self._now()
+        with self.session_manager.session(commit=True) as session:
+            stmt = select(RelationRecord).where(
+                RelationRecord.relation_id == rid,
+                RelationRecord.status == RelationRecord.ACTIVE,
+            )
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return False
+            row.status = RelationRecord.INACTIVE
+            row.terminated_at = now
+            row.updated_at = now
+            row.version = row.version + 1
+        return True
+
     def list_all(self) -> List[Dict[str, Any]]:
         from sqlalchemy import select
 

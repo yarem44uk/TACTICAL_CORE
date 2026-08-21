@@ -35,28 +35,49 @@ TOMBSTONED  (terminal; no reactivation)
 ## Relation State Machine (v1)
 ```
 ACTIVE
-  ↓ entity-deactivation cascade
+  ├── entity-deactivation cascade  (WO-017: ENTITY_REMOVED)
+  └── explicit relation severance  (WO-018: RELATION_SEVERED)
 INACTIVE  (terminal; no reactivation)
 ```
 - `ACTIVE`: default on relation creation (existing rows backfilled to `ACTIVE`).
-- `INACTIVE`: terminal; entered by the entity-deactivation cascade; row remains durable.
+- `INACTIVE`: terminal; entered either by the entity-deactivation cascade
+  (WO-017) or by explicit relation severance (WO-018, `RELATION_SEVERED`);
+  the row remains durable.
 - No `SUPERSEDED`, no reactivation, no temporal `valid_from`/`valid_to` fields in v1.
 - Deterministic relation identity is unchanged and does not include lifecycle state.
+
+## Explicit Relation Severance (WO-018)
+WO-018 adds a second, architecturally distinct path into the same
+`ACTIVE → INACTIVE` relation terminal state: the canonical event
+`RELATION_SEVERED = "relation.severed"`.
+
+- `RELATION_SEVERED` is an explicit operator/system command that severs a
+  SINGLE existing relation.  It affects ONLY the identified relation.
+- It NEVER mutates either endpoint entity lifecycle state, and NEVER cascades
+  to other relations (architecturally distinct from `ENTITY_REMOVED`, which
+  tombstones an entity and cascades to all its relations).
+- It does NOT create a relation (a severance event is never a relation-creation
+  source), and it does NOT change the deterministic relation identity.
+- Semantics: deterministic, idempotent (reprocessing a severance of an
+  already-INACTIVE relation is a safe no-op), durable (row updated in place
+  through the single `DatabaseSessionManager` owner), non-reactivating.
+- Flows through the canonical EventPipeline composite projection.
+
+## Event Contract
+- No `LINK_CREATED`, `LINK_SEVERED`, `ENTITY_DEACTIVATED`, `RELATION_INVALIDATED`,
+  `RELATION_SUPERSEDED`, `TOMBSTONE`, or `SUPERSEDED` event types are introduced.
+- `ENTITY_REMOVED` is the canonical logical-removal event; its persistence
+  representation changes from physical deletion to durable tombstoning.
+  Canonical Event semantics remain unchanged and immutable.
+- `RELATION_SEVERED` is introduced by WO-018 as a NEW canonical EventType for
+  explicit relation severance (a separate ratified decision, as originally
+  deferred by this ADR).
 
 ## Entity → Relation Cascade
 When an entity transitions `ACTIVE → TOMBSTONED`, every canonical relation where
 `source_entity_id == entity OR target_entity_id == entity` transitions `ACTIVE → INACTIVE`.
 The cascade is synchronous, deterministic, idempotent, replayable, projection-time, and based on the
 canonical lifecycle event. It is NOT atomic with the entity persistence operation (independent transactions).
-
-## Event Contract
-- No new `EventType` values. `EventType` taxonomy unchanged.
-- `ENTITY_REMOVED` is the canonical logical-removal event; its persistence representation changes from
-  physical deletion to durable tombstoning. Canonical Event semantics remain unchanged and immutable.
-- No `LINK_CREATED`, `LINK_SEVERED`, `ENTITY_DEACTIVATED`, `RELATION_INVALIDATED`, `RELATION_SUPERSEDED`,
-  `TOMBSTONE`, or `SUPERSEDED` event types are introduced.
-- Explicit relation-level severance (severing a relation while both endpoints remain ACTIVE) is OUT OF SCOPE
-  for this architecture and requires a separate ratified decision.
 
 ## Transaction Model
 Independent transactions per persistence operation (unchanged):
@@ -92,9 +113,10 @@ by deterministic `Event.seq`-ordered replay/recovery.
   canonical read-side. No CQRS/read-model redesign in v1.
 
 ## Out of Scope (future decisions)
-- SUPERSEDED state; relation reactivation; temporal validity intervals; relation-level severance event;
-  new EventType values; CQRS/read-model redesign; replay engine implementation; second DB owner;
+- SUPERSEDED state; relation reactivation; temporal validity intervals;
+  CQRS/read-model redesign; replay engine implementation; second DB owner;
   atomic entity/relation transaction.
+  (Explicit relation severance — `RELATION_SEVERED` — is IN SCOPE as of WO-018.)
 
 ## Consequences
 Positive: auditable lifecycle; replayable/idempotent in `seq` order; historical preservation; no

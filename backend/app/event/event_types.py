@@ -16,6 +16,15 @@ class EventType(str, Enum):
     ENTITY_UPDATED = "entity.updated"
     ENTITY_REMOVED = "entity.removed"
 
+    # Relation
+    # WO-018 — Explicit canonical relation severance.  An explicit
+    # operator/system command that a specific existing relation is no longer
+    # valid.  Affects ONLY the identified relation (ACTIVE -> INACTIVE, durable
+    # terminal); it never mutates either endpoint entity and never cascades.
+    # Distinct from ENTITY_REMOVED (which tombstones an entity and cascades to
+    # all its relations).
+    RELATION_SEVERED = "relation.severed"
+
     # Observation
     OBSERVATION_CREATED = "observation.created"
     OBSERVATION_VERIFIED = "observation.verified"
