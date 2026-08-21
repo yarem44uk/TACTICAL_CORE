@@ -46,7 +46,7 @@ file is modified here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from app.event.event import Event  # noqa: F401  (public type re-export)
 from app.event_pipeline.event_pipeline import EventPipeline
@@ -65,6 +65,12 @@ from app.projection.catch_up import ProjectionCatchUp
 from app.projection.recovery_health import ProjectionRecoveryHealth
 from app.event_bus.event_bus import EventBus
 from app.observation.service import ObservationService
+from app.entity_relations.sqlalchemy_relation_repository import (
+    SQLAlchemyRelationRepository,
+)
+from app.entity_relations.relation_projection import (
+    project_relation_from_event,
+)
 
 
 @dataclass(frozen=True)
@@ -104,6 +110,7 @@ class EventRuntime:
     projection_recovery_health: Optional["object"] = None
     event_bus: Optional["object"] = None
     observation_service: Optional["object"] = None
+    relation_repository: Optional["object"] = None
 
 
 def create_event_runtime(
@@ -195,7 +202,31 @@ def create_event_runtime(
         entity_manager=entity_manager,
         checkpoint_repository=projection_checkpoint,
     )
-    pipeline.set_projection(projection_observability.wrap(_project_event_to_entity(entity_bridge)))
+    # WO-016 — Durable Relation Projection (additive wiring).
+    #
+    # Downstream of the canonical Entity projection, the production runtime
+    # also projects durable Entity RELATIONS from canonical Events.  A single
+    # composite projection callable runs the Entity projection first and then
+    # the durable Relation projection, so the EventPipeline keeps ONE
+    # ``_projection`` seam, ONE event path and ONE dispatch plane.  The durable
+    # relation repository reuses the single ``DatabaseSessionManager`` owner
+    # (no second engine/sessionmaker/persistence plane).  The relation
+    # projection is best-effort (never propagates), so it can never roll back
+    # or prevent the already-durable canonical Event.
+    relation_repository = _build_durable_relation_repository()
+    relation_projector = project_relation_from_event(
+        repository=relation_repository
+    )
+
+    def _composite_projection(event: Any) -> None:
+        # Entity projection first (existing behavior), then durable relation
+        # projection (WO-016).  Both are best-effort and isolated.
+        _project_event_to_entity(entity_bridge)(event)
+        relation_projector(event)
+
+    pipeline.set_projection(
+        projection_observability.wrap(_composite_projection)
+    )
 
     # WO-014-025 — deterministic catch-up driver over the durable event log.
     # Wired so an embedding application can run catch-up on startup/interval.
@@ -258,6 +289,7 @@ def create_event_runtime(
         projection_recovery_health=projection_recovery_health,
         event_bus=event_bus,
         observation_service=observation_service,
+        relation_repository=relation_repository,
     )
 
 
@@ -396,6 +428,21 @@ def _build_projection_checkpoint() -> "ProjectionCheckpointRepository":
     ``Base.metadata`` when the session manager is configured. Single owner.
     """
     repo = ProjectionCheckpointRepository()
+    if _session_manager_ready():
+        repo.initialize()
+    return repo
+
+
+def _build_durable_relation_repository() -> "SQLAlchemyRelationRepository":
+    """Build the durable Entity-relation repository over the single DB owner.
+
+    Constructs ``SQLAlchemyRelationRepository`` (the durable implementation of
+    the Relation ``IRelationRepository``), which reuses the canonical
+    ``DatabaseSessionManager``.  Initialises the durable ``entity_relations``
+    table on the shared ``Base.metadata`` when the session manager is
+    configured.  No second engine/sessionmaker/owner is created.
+    """
+    repo = SQLAlchemyRelationRepository()
     if _session_manager_ready():
         repo.initialize()
     return repo
