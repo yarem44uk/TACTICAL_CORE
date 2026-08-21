@@ -255,9 +255,18 @@ def _is_sqlite_locked(exc: BaseException) -> bool:
 
     if not isinstance(exc, OperationalError):
         return False
-    text = " ".join(
-        str(arg) for arg in getattr(exc, "orig", None) or ()
-    ).lower() + " " + str(exc).lower()
+    # ``exc.orig`` is the wrapped driver exception (e.g. ``sqlite3
+    # .OperationalError``) — a single exception, not necessarily iterable.
+    # Build a lowercase text fingerprint from both the wrapped error and the
+    # SQLAlchemy error message so 'database is locked' / 'database is busy'
+    # are reliably detected regardless of driver formatting.
+    orig = getattr(exc, "orig", None)
+    text = str(exc).lower()
+    if orig is not None:
+        try:
+            text += " " + str(orig).lower()
+        except Exception:  # noqa: BLE001 - best-effort only
+            pass
     return ("database is locked" in text) or ("database is busy" in text)
 
 
