@@ -672,7 +672,10 @@ def wire_durable_delivery(
 
     outbox = SQLAlchemyOutboxRepository()
     outbox.initialize()
-    dispatcher = DurableDeliveryDispatcher(outbox_repository=outbox)
+    dispatcher = DurableDeliveryDispatcher(
+        outbox_repository=outbox,
+        event_repository=repository,
+    )
 
     def _deliver_plugins(event: Any) -> None:
         # Post-commit fan-out to every registered + RUNNING plugin.  Each
