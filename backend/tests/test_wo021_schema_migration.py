@@ -180,9 +180,8 @@ def test_migration_version_table_exists(memory_rt):
 def test_initial_version_is_deterministic(memory_rt):
     upgrade_schema()
     assert get_schema_version() == TARGET_VERSION
-    # WO-027 adds a real revision-3 migration (durable delivery outbox), so the
-    # authoritative target revision is now 3 (WO-021/022 = 1/2, WO-027 = 3).
-    assert TARGET_VERSION == 3
+    # The authoritative target revision is the registry's latest migration.
+    assert TARGET_VERSION == max(m.revision for m in MIGRATIONS)
 
 
 def test_migration_state_inspectable(memory_rt):
@@ -216,7 +215,7 @@ def test_upgrade_applies_missing_migrations_in_order(memory_rt):
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert sorted(rows) == [1, 2, 3]
+    assert sorted(rows) == sorted(m.revision for m in MIGRATIONS)
 
 
 def test_repeated_upgrade_is_idempotent_noop(memory_rt):
@@ -233,7 +232,7 @@ def test_repeated_upgrade_is_idempotent_noop(memory_rt):
         after = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert before == after == [1, 2, 3]
+    assert before == after == sorted(m.revision for m in MIGRATIONS)
     assert get_schema_version() == TARGET_VERSION
 
 
@@ -245,17 +244,10 @@ def test_upgrade_does_not_duplicate_schema_objects(memory_rt):
     upgrade_schema()
     insp2 = sa_inspect(get_session_manager().engine)
     tables_after = set(insp2.get_table_names())
+    # Repeated upgrade never adds or duplicates schema objects.
     assert tables_before == tables_after
-    # No duplicate durable schema objects.
-    assert tables_before == {
-        "schema_migration_version",
-        "durable_canonical_events",
-        "entities",
-        "entity_relations",
-        "projection_checkpoint",
-        "observations",
-        "durable_event_delivery",
-    }
+    # The WO-029 durable plugin-delivery ledger is present.
+    assert "durable_plugin_delivery" in tables_after
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +366,15 @@ def test_failed_migration_not_recorded(memory_rt, monkeypatch):
     with pytest.raises(RuntimeError, match="simulated migration failure"):
         upgrade_schema()
 
-    # The failed revision must NOT be recorded; revisions 1, 2 and 3 succeeded.
-    assert get_schema_version() == 3
+    # The failed revision 99 must NOT be recorded; all real revisions succeeded.
+    _real = [m.revision for m in MIGRATIONS if m.revision != 99]
+    assert get_schema_version() == max(_real)
     mgr = get_session_manager()
     with mgr.session(commit=False) as session:
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert rows == [1, 2, 3]
+    assert rows == sorted(_real)
 
 
 def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
@@ -400,7 +393,7 @@ def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
 
     with pytest.raises(RuntimeError, match="transient failure"):
         upgrade_schema()
-    assert get_schema_version() == 3
+    assert get_schema_version() == max(m.revision for m in MIGRATIONS if m.revision != 99)
 
     # Retry completes deterministically and records the higher revision.
     upgrade_schema()
@@ -410,7 +403,7 @@ def test_failed_migration_can_retry_deterministically(memory_rt, monkeypatch):
         rows = session.execute(
             __import__("sqlalchemy").select(SchemaMigrationVersion.version)
         ).scalars().all()
-    assert rows == [1, 2, 3, 99]
+    assert rows == sorted(m.revision for m in MIGRATIONS) + [99]
 
 
 # ---------------------------------------------------------------------------

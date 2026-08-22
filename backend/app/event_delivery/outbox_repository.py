@@ -40,11 +40,38 @@ class SQLAlchemyOutboxRepository:
         session_manager: Optional[DatabaseSessionManager] = None,
         *,
         stale_lease_seconds: int = 60,
+        max_attempts: int = 5,
+        backoff_base_seconds: float = 2.0,
     ) -> None:
         self._session_manager = session_manager
         # A delivery left IN_FLIGHT for longer than this lease is assumed to
         # belong to a crashed worker and is reclaimed for retry.
         self._stale_lease_seconds = stale_lease_seconds
+        # WO-029 retry policy: a FAILED delivery is retried with bounded,
+        # deterministic backoff and is retired to DEAD_LETTER once it exceeds
+        # ``max_attempts`` (no unbounded immediate retry loop).
+        self._max_attempts = max_attempts
+        self._backoff_base_seconds = backoff_base_seconds
+
+    def set_retry_policy(
+        self,
+        *,
+        max_attempts: Optional[int] = None,
+        backoff_base_seconds: Optional[float] = None,
+        stale_lease_seconds: Optional[int] = None,
+    ) -> None:
+        """Override the delivery retry policy.
+
+        Lets a caller (e.g. ``DurableDeliveryDispatcher``) apply a consistent
+        retry policy even when this repository was injected rather than
+        constructed by the dispatcher.
+        """
+        if max_attempts is not None:
+            self._max_attempts = max_attempts
+        if backoff_base_seconds is not None:
+            self._backoff_base_seconds = backoff_base_seconds
+        if stale_lease_seconds is not None:
+            self._stale_lease_seconds = stale_lease_seconds
 
     # -- ownership -----------------------------------------------------------
 
@@ -108,25 +135,67 @@ class SQLAlchemyOutboxRepository:
     ) -> List[DurableDeliveryRecord]:
         """Claim up to ``limit`` eligible delivery records.
 
-        Eligible = PENDING, FAILED (retryable), or IN_FLIGHT whose lease has
-        expired (a crashed worker).  Claimed records are transitioned to
-        IN_FLIGHT (with an incremented attempt counter) so a concurrent
-        dispatcher will not pick them up.  Recovery of stale IN_FLIGHT is what
-        makes AT-LEAST-ONCE delivery lossless after a process crash, and the
-        inclusion of FAILED is what keeps a failed consumer retryable
-        (delivery guarantee: a failed consumer must not be permanently lost).
+        WO-029 eligibility (no unbounded immediate retry):
+          * PENDING — never yet delivered;
+          * stale IN_FLIGHT below max_attempts — a crashed worker (lease
+            expired) whose attempts have not been exhausted;
+          * FAILED whose ``next_attempt_at`` has arrived (backoff schedule) and
+            whose ``attempts < max_attempts``.
+
+        F2 INVARIANT: ``attempts`` MUST NEVER exceed ``max_attempts`` and no
+        consumer is invoked after ``max_attempts`` is exhausted.  A stale
+        IN_FLIGHT record at ``attempts >= max_attempts`` is NOT reclaimed for
+        delivery; it is retired to DEAD_LETTER (terminal) instead, without
+        incrementing attempts.
+
+        DEAD_LETTER records are terminal and are NEVER claimed.
+
+        CONCURRENCY (WO-029): claiming is ATOMIC.  Candidates are first
+        selected read-only, then each is claimed with a single conditional
+        ``UPDATE ... WHERE id=:id AND state='<eligibility>'``.  Only a claim
+        whose UPDATE matched exactly one row (rowcount == 1) is won by this
+        caller; a row already transitioned to IN_FLIGHT by a concurrent
+        dispatcher no longer matches and returns rowcount 0, so it is NOT
+        double-claimed (no duplicate consumer execution).  SQLite serializes
+        the writes, making this safe across independent processes.
         """
         now = datetime.now(timezone.utc)
         stale_before = now - timedelta(seconds=self._stale_lease_seconds)
         with self.session_manager.session(commit=True) as session:
+            # F2: retire stale IN_FLIGHT records that have exhausted
+            # max_attempts directly to DEAD_LETTER (terminal) WITHOUT invoking
+            # the consumer again and WITHOUT incrementing attempts.  Atomic
+            # conditional UPDATE keeps concurrency safety: only a row that is
+            # still IN_FLIGHT and stale and at/over max_attempts matches.
+            session.execute(
+                update(DurableDeliveryRecord)
+                .where(
+                    (DurableDeliveryRecord.state == DurableDeliveryRecord.IN_FLIGHT)
+                    & (DurableDeliveryRecord.updated_at < stale_before)
+                    & (DurableDeliveryRecord.attempts >= self._max_attempts)
+                )
+                .values(
+                    state=DurableDeliveryRecord.DEAD_LETTER,
+                    next_attempt_at=None,
+                    updated_at=now,
+                )
+            )
             stmt = (
-                select(DurableDeliveryRecord)
+                select(DurableDeliveryRecord.id)
                 .where(
                     (DurableDeliveryRecord.state == DurableDeliveryRecord.PENDING)
-                    | (DurableDeliveryRecord.state == DurableDeliveryRecord.FAILED)
+                    | (
+                        (DurableDeliveryRecord.state == DurableDeliveryRecord.FAILED)
+                        & (DurableDeliveryRecord.attempts < self._max_attempts)
+                        & (
+                            (DurableDeliveryRecord.next_attempt_at.is_(None))
+                            | (DurableDeliveryRecord.next_attempt_at <= now)
+                        )
+                    )
                     | (
                         (DurableDeliveryRecord.state == DurableDeliveryRecord.IN_FLIGHT)
                         & (DurableDeliveryRecord.updated_at < stale_before)
+                        & (DurableDeliveryRecord.attempts < self._max_attempts)
                     )
                 )
                 .order_by(DurableDeliveryRecord.created_at.asc())
@@ -134,12 +203,49 @@ class SQLAlchemyOutboxRepository:
             )
             if consumer_ids:
                 stmt = stmt.where(DurableDeliveryRecord.consumer_id.in_(consumer_ids))
-            rows = list(session.execute(stmt).scalars().all())
-            for row in rows:
-                row.state = DurableDeliveryRecord.IN_FLIGHT
-                row.attempts += 1
-                row.updated_at = now
-            return rows
+            candidate_ids = list(session.execute(stmt).scalars().all())
+
+            claimed: List[DurableDeliveryRecord] = []
+            for rid in candidate_ids:
+                # Atomic conditional claim: only wins if the row is STILL in an
+                # eligible state at UPDATE time.  A concurrent claim already
+                # transitioned it -> rowcount 0 -> not claimed twice.
+                result = session.execute(
+                    update(DurableDeliveryRecord)
+                    .where(
+                        (DurableDeliveryRecord.id == rid)
+                        & (
+                            (DurableDeliveryRecord.state == DurableDeliveryRecord.PENDING)
+                            | (
+                                (DurableDeliveryRecord.state == DurableDeliveryRecord.FAILED)
+                                & (DurableDeliveryRecord.attempts < self._max_attempts)
+                                & (
+                                    (DurableDeliveryRecord.next_attempt_at.is_(None))
+                                    | (DurableDeliveryRecord.next_attempt_at <= now)
+                                )
+                            )
+                            | (
+                                (DurableDeliveryRecord.state == DurableDeliveryRecord.IN_FLIGHT)
+                                & (DurableDeliveryRecord.updated_at < stale_before)
+                                & (DurableDeliveryRecord.attempts < self._max_attempts)
+                            )
+                        )
+                    )
+                    .values(
+                        state=DurableDeliveryRecord.IN_FLIGHT,
+                        attempts=DurableDeliveryRecord.attempts + 1,
+                        updated_at=now,
+                    )
+                )
+                if result.rowcount != 1:
+                    continue  # another dispatcher claimed it concurrently
+                row = session.execute(
+                    select(DurableDeliveryRecord).where(
+                        DurableDeliveryRecord.id == rid
+                    )
+                ).scalar_one()
+                claimed.append(row)
+            return claimed
 
     def mark_delivered(self, event_id: str, consumer_id: str) -> None:
         """Mark an event/consumer delivery as successfully delivered."""
@@ -154,6 +260,7 @@ class SQLAlchemyOutboxRepository:
                 return
             row.state = DurableDeliveryRecord.DELIVERED
             row.last_error = None
+            row.next_attempt_at = None
             row.updated_at = datetime.now(timezone.utc)
 
     def mark_pending(self, event_id: str, consumer_id: str) -> None:
@@ -175,8 +282,26 @@ class SQLAlchemyOutboxRepository:
             row.state = DurableDeliveryRecord.PENDING
             row.updated_at = datetime.now(timezone.utc)
 
+    def _backoff_delay(self, completed_attempts: int) -> float:
+        """Deterministic exponential backoff (capped) for a completed attempt.
+
+        ``completed_attempts`` is the 1-based attempt number that just failed.
+        Delay grows exponentially from the base and is capped at 60s so the
+        schedule stays bounded and deterministic.
+        """
+        exponent = max(0, completed_attempts - 1)
+        delay = self._backoff_base_seconds * (2 ** exponent)
+        return min(delay, 60.0)
+
     def mark_failed(self, event_id: str, consumer_id: str, error: str) -> None:
-        """Record a failed delivery attempt (leaves the record retryable)."""
+        """Record a failed delivery attempt.
+
+        WO-029 retry policy: if the delivery has exhausted ``max_attempts`` it
+        is retired to DEAD_LETTER (terminal, never auto-claimed).  Otherwise it
+        is left FAILED with a deterministic ``next_attempt_at`` backoff so a
+        subsequent ``claim_pending`` will not retry it until the schedule
+        arrives (no unbounded immediate retry loop).
+        """
         with self.session_manager.session(commit=True) as session:
             row = session.execute(
                 select(DurableDeliveryRecord).where(
@@ -186,9 +311,57 @@ class SQLAlchemyOutboxRepository:
             ).scalar_one_or_none()
             if row is None:
                 return
-            row.state = DurableDeliveryRecord.FAILED
             row.last_error = (error or "")[:500]
             row.updated_at = datetime.now(timezone.utc)
+            if row.attempts >= self._max_attempts:
+                row.state = DurableDeliveryRecord.DEAD_LETTER
+                row.next_attempt_at = None
+            else:
+                row.state = DurableDeliveryRecord.FAILED
+                row.next_attempt_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=self._backoff_delay(row.attempts)
+                )
+
+    def mark_dead_letter(self, event_id: str, consumer_id: str, error: str) -> None:
+        """Force a delivery to DEAD_LETTER (terminal) regardless of attempts."""
+        with self.session_manager.session(commit=True) as session:
+            row = session.execute(
+                select(DurableDeliveryRecord).where(
+                    DurableDeliveryRecord.event_id == event_id,
+                    DurableDeliveryRecord.consumer_id == consumer_id,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            row.state = DurableDeliveryRecord.DEAD_LETTER
+            row.last_error = (error or "")[:500]
+            row.next_attempt_at = None
+            row.updated_at = datetime.now(timezone.utc)
+
+    def requeue_dead_letter(
+        self, event_id: str, consumer_id: str
+    ) -> bool:
+        """Explicit administrative requeue of a DEAD_LETTER delivery.
+
+        Returns the delivery to PENDING with a fresh attempt schedule so it can
+        be redelivered.  Returns False if the record does not exist or is not
+        in DEAD_LETTER state.
+        """
+        with self.session_manager.session(commit=True) as session:
+            row = session.execute(
+                select(DurableDeliveryRecord).where(
+                    DurableDeliveryRecord.event_id == event_id,
+                    DurableDeliveryRecord.consumer_id == consumer_id,
+                )
+            ).scalar_one_or_none()
+            if row is None or row.state != DurableDeliveryRecord.DEAD_LETTER:
+                return False
+            row.state = DurableDeliveryRecord.PENDING
+            row.attempts = 0
+            row.next_attempt_at = None
+            row.last_error = None
+            row.updated_at = datetime.now(timezone.utc)
+            return True
 
     # -- inspection ----------------------------------------------------------
 

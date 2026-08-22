@@ -38,6 +38,7 @@ class DurableDeliveryRecord(Base):
     IN_FLIGHT = "IN_FLIGHT"
     DELIVERED = "DELIVERED"
     FAILED = "FAILED"
+    DEAD_LETTER = "DEAD_LETTER"
 
     # -- columns --------------------------------------------------------------
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid.uuid4().hex)
@@ -45,6 +46,11 @@ class DurableDeliveryRecord(Base):
     consumer_id: Mapped[str] = mapped_column(String(100), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default=PENDING)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Next time a FAILED delivery becomes eligible for retry (backoff schedule).
+    # NULL for PENDING / IN_FLIGHT / DELIVERED / DEAD_LETTER.
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,

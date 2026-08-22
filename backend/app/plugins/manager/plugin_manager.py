@@ -78,8 +78,23 @@ class PluginManager(IPluginManager):
         self._event_bus: Optional[Any] = None
         self._event_engine: Optional[Any] = None
         self._executors: Dict[str, PluginExecutor] = {}
+        # WO-029 durable plugin-delivery idempotency ledger.  None disables the
+        # durable idempotency boundary (plugin delivery remains AT-LEAST-ONCE);
+        # when set, each running plugin's on_event is wrapped by
+        # PluginDeliveryLedger.run_idempotent keyed on (event_id, plugin_id).
+        self._plugin_delivery_ledger: Optional[Any] = None
 
         logger.info("PluginManager initialized")
+
+    def set_plugin_delivery_ledger(self, ledger: Any) -> None:
+        """WO-029 — attach the durable (event_id, plugin_id) idempotency ledger.
+
+        When set, ``deliver_event`` suppresses a duplicate durable plugin side
+        effect for an already-delivered (event_id, plugin_id) pair.  When None
+        (the default), plugin delivery is unchanged (AT-LEAST-ONCE only).
+        """
+        with self._lock:
+            self._plugin_delivery_ledger = ledger
 
     # ------------------------------------------------------------------
     # Dependency injection
@@ -441,8 +456,21 @@ class PluginManager(IPluginManager):
             if entry.status != RUNNING:
                 # Only active/running plugins receive normal event delivery.
                 continue
+            ledger = self._plugin_delivery_ledger
             try:
-                entry.instance.on_event(event)
+                if ledger is not None:
+                    # WO-029 durable idempotency boundary keyed on
+                    # (event_id, plugin_id).  If the plugin's durable delivery
+                    # record already exists, its side effect is not re-run
+                    # (AT-LEAST-ONCE with a durable idempotency boundary).  A
+                    # crash between the side effect and the ledger write is NOT
+                    # atomically bounded — the plugin may run again.
+                    def _run() -> None:
+                        entry.instance.on_event(event)
+
+                    ledger.run_idempotent(event.event_id, entry.plugin_id, _run)
+                else:
+                    entry.instance.on_event(event)
             except Exception as exc:
                 logger.error(
                     f"Plugin {entry.plugin_id} failed handling event "

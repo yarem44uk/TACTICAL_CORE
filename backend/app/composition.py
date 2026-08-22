@@ -668,6 +668,7 @@ def wire_durable_delivery(
     state; failure of one never blocks the other).
     """
     from app.event_delivery.outbox_repository import SQLAlchemyOutboxRepository
+    from app.event_delivery.plugin_idempotency_ledger import PluginDeliveryLedger
 
     outbox = SQLAlchemyOutboxRepository()
     outbox.initialize()
@@ -683,6 +684,15 @@ def wire_durable_delivery(
 
     dispatcher.register_consumer("plugins", _deliver_plugins)
     dispatcher.register_consumer("observation", _deliver_observation)
+
+    # WO-029 durable plugin-delivery idempotency boundary.  Attach the durable
+    # (event_id, plugin_id) ledger to the plugin manager so each running
+    # plugin's side effect is executed at most once per canonical event_id
+    # (AT-LEAST-ONCE with a durable idempotency boundary).  No second DB owner.
+    ledger = PluginDeliveryLedger()
+    ledger.initialize()
+    plugin_manager = plugin_dispatcher._plugin_manager
+    plugin_manager.set_plugin_delivery_ledger(ledger)
 
     pipeline.set_delivery_dispatcher(dispatcher)
     pipeline.set_outbox_consumer_ids(["plugins", "observation"])

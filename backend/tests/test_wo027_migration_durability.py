@@ -232,7 +232,13 @@ def test_multiple_consumers_deliver_independently(repo, outbox):
 
 
 def test_consumer_failure_then_retry_succeeds(repo, outbox):
-    disp = DurableDeliveryDispatcher(outbox_repository=outbox)
+    # WO-029: use a zero backoff so the FAILED delivery is immediately
+    # reclaimable on the next pass (verifies the retry path without waiting).
+    disp = DurableDeliveryDispatcher(
+        outbox_repository=outbox,
+        max_attempts=5,
+        backoff_base_seconds=0,
+    )
     attempts = {"n": 0}
 
     def flaky(record):
@@ -481,13 +487,14 @@ def test_consumer_crash_after_side_effect_idempotent(file_db):
 
 
 def test_wo027_migration_is_registered_and_targets_revision(file_db):
-    """WO-027 adds a real revision-3 migration (durable delivery outbox)."""
+    """WO-027 adds the durable delivery outbox migration (revision 3)."""
     from app.database.schema_migration import MIGRATIONS
 
     revs = [m.revision for m in MIGRATIONS]
-    assert TARGET_VERSION == 3
-    assert revs == [1, 2, 3]
-    assert MIGRATIONS[-1].name == "durable_delivery_outbox"
+    assert TARGET_VERSION == 4
+    assert revs == [1, 2, 3, 4]
+    assert MIGRATIONS[2].name == "durable_delivery_outbox"
+    assert MIGRATIONS[3].name == "durable_plugin_delivery_ledger"
 
 
 def test_single_database_owner_preserved(file_db, repo, outbox):

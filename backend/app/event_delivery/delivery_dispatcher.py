@@ -15,10 +15,22 @@ Delivery contract:
   * Independent consumers: each ``consumer_id`` has its own delivery record and
     its own state; failure of one never blocks delivery to another.
 
-State machine (durable): PENDING -> IN_FLIGHT -> DELIVERED | FAILED.
-A delivery left IN_FLIGHT beyond the stale lease is reclaimed by
-``claim_pending`` and retried, so a crash mid-delivery never permanently loses
-an event.
+State machine (durable): PENDING -> IN_FLIGHT -> DELIVERED | FAILED.  A
+FAILED delivery is retried with deterministic backoff (WO-029) and retired to
+DEAD_LETTER once ``max_attempts`` is exceeded; DEAD_LETTER is terminal unless
+explicitly requeued.  A delivery left IN_FLIGHT beyond the stale lease is
+reclaimed by ``claim_pending`` and retried, so a crash mid-delivery never
+permanently loses an event.
+
+ORDERING CONTRACT (WO-029)
+--------------------------
+Delivery ordering is guaranteed ONLY within a single dispatcher for a given
+consumer: ``claim_pending`` orders eligible records by ``created_at`` and a
+single dispatcher processes them sequentially, so one consumer observes its
+deliveries in enqueue order.  Global ordering across multiple independent
+dispatcher processes is NOT guaranteed (each dispatcher claims independently);
+the durable canonical ``seq`` remains the authoritative event order for
+replay/projection.  No distributed ordering protocol is implemented.
 """
 
 from __future__ import annotations
@@ -38,8 +50,24 @@ class DurableDeliveryDispatcher:
     def __init__(
         self,
         outbox_repository: Optional[SQLAlchemyOutboxRepository] = None,
+        *,
+        max_attempts: int = 5,
+        backoff_base_seconds: float = 2.0,
+        stale_lease_seconds: int = 60,
     ) -> None:
-        self._outbox = outbox_repository or SQLAlchemyOutboxRepository()
+        self._outbox = outbox_repository or SQLAlchemyOutboxRepository(
+            max_attempts=max_attempts,
+            backoff_base_seconds=backoff_base_seconds,
+            stale_lease_seconds=stale_lease_seconds,
+        )
+        # Ensure the retry policy applies even when an outbox_repository was
+        # injected (WO-029: the dispatcher is the single owner of the delivery
+        # policy regardless of how the repository was provided).
+        self._outbox.set_retry_policy(
+            max_attempts=max_attempts,
+            backoff_base_seconds=backoff_base_seconds,
+            stale_lease_seconds=stale_lease_seconds,
+        )
         # consumer_id -> callable(event) that performs the durable side effect.
         self._consumers: Dict[str, Callable[[object], None]] = {}
 
