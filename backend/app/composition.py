@@ -387,6 +387,30 @@ def create_event_runtime(
         observation_service.subscribe_canonical(event_bus)
         pipeline.set_event_bus(event_bus)
 
+    # WO-030 — canonical durable-delivery composition owner.
+    #
+    # create_event_runtime() is the SINGLE production wiring owner for the
+    # durable post-commit delivery dispatcher.  When the canonical
+    # DatabaseSessionManager is configured (real production), it wires the
+    # WO-027 transactional outbox + durable delivery dispatcher (plugins +
+    # observation consumers, WO-029 plugin-delivery idempotency ledger) onto
+    # the pipeline, and exposes the exact same dispatcher instance on
+    # EventRuntime.delivery_dispatcher.  When no session manager is
+    # configured (lightweight/test-only runtime), durable delivery is left
+    # unwired and the legacy in-process path remains — this function itself
+    # never forces a database to appear.
+    #
+    # The wiring is performed exactly ONCE here; create_production_runtime()
+    # must NOT re-wire it (see bootstrap.py).
+    delivery_dispatcher = None
+    if session_manager_ready():
+        delivery_dispatcher = wire_durable_delivery(
+            pipeline=pipeline,
+            plugin_dispatcher=dispatcher,
+            event_bus=event_bus,
+            repository=repository,
+        )
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
@@ -402,6 +426,7 @@ def create_event_runtime(
         event_bus=event_bus,
         observation_service=observation_service,
         relation_repository=relation_repository,
+        delivery_dispatcher=delivery_dispatcher,
     )
 
 

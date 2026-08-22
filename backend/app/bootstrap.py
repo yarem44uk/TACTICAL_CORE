@@ -50,7 +50,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.composition import EventRuntime, create_event_runtime
-from app.composition import session_manager_ready, wire_durable_delivery
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_sources.factory.event_factory import EventFactory
 from app.event_sources.identity.event_identity import EventIdentityResolver
@@ -258,6 +257,8 @@ class ProductionRuntime:
 
 def create_production_runtime(
     plugin_manager: Optional[PluginManager] = None,
+    *,
+    require_durable_delivery: bool = False,
 ) -> ProductionRuntime:
     """Build the authoritative production runtime.
 
@@ -270,34 +271,41 @@ def create_production_runtime(
         plugin_manager: Optional ``PluginManager``.  Defaults to the global
             singleton from ``get_plugin_manager()`` (kept as the single
             authoritative instance).
+        require_durable_delivery: When True, production MUST have a durable
+            post-commit delivery dispatcher.  If the canonical
+            DatabaseSessionManager is not configured and no dispatcher could
+            be established, a ``RuntimeError`` is raised so production NEVER
+            silently downgrades to the legacy non-durable delivery path.  The
+            default is False so runtime-only bootstrap tests (which exercise
+            the legacy in-process path without a database) remain unaffected.
 
     Returns:
         A ``ProductionRuntime`` handle ready for ``add_source`` / ``start``.
     """
     event_runtime = create_event_runtime(plugin_manager=plugin_manager)
 
-    # WO-027 — durable post-commit delivery (transactional outbox).
+    # WO-030 — durable post-commit delivery (transactional outbox).
     #
-    # When the canonical DatabaseSessionManager is configured (real
-    # production), the authoritative production runtime is wired with a
-    # durable delivery dispatcher: the pipeline atomically commits each
-    # canonical event AND its PENDING outbox delivery records in one
-    # transaction, then delivers to consumers STRICTLY AFTER the commit.  No
-    # consumer side effect (plugin, event bus, observation) runs before the
-    # durable commit.  Delivery is AT-LEAST-ONCE with durable per-consumer
-    # state and canonical event_id idempotency.
+    # The canonical durable-delivery composition owner is
+    # create_event_runtime(): it wires the durable delivery dispatcher onto
+    # the pipeline exactly once and exposes it as
+    # event_runtime.delivery_dispatcher (object-identical to
+    # event_runtime.pipeline._delivery_dispatcher).  create_production_runtime()
+    # therefore does NOT wire durable delivery a second time — it reads the
+    # dispatcher established by create_event_runtime() and passes it through
+    # to the ProductionRuntime handle.
     #
     # When no session manager is configured (runtime-only bootstrap tests),
-    # the legacy in-process path remains in place so runtime-only unit tests
-    # are unaffected — real production always configures the single
-    # DatabaseSessionManager.
-    delivery_dispatcher = None
-    if session_manager_ready():
-        delivery_dispatcher = wire_durable_delivery(
-            pipeline=event_runtime.pipeline,
-            plugin_dispatcher=event_runtime.plugin_dispatcher,
-            event_bus=event_runtime.event_bus,
-            repository=event_runtime.event_service._repository,
+    # event_runtime.delivery_dispatcher is None and the legacy in-process path
+    # remains — unless require_durable_delivery is True, in which case
+    # production fails explicitly rather than silently downgrading.
+    delivery_dispatcher = event_runtime.delivery_dispatcher
+
+    if require_durable_delivery and delivery_dispatcher is None:
+        raise RuntimeError(
+            "WO-030: production durable delivery requires a configured "
+            "DatabaseSessionManager; cannot silently fall back to the "
+            "legacy non-durable delivery path."
         )
 
     factory = EventFactory(identity_resolver=EventIdentityResolver())

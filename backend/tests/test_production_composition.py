@@ -150,7 +150,11 @@ def test_canonical_event_reaches_running_plugin(global_session_manager):
 
     assert result is True
     assert len(plugin.received) == 1
-    assert plugin.received[0] is event
+    # WO-030 — canonical identity contract: the durable path delivers a
+    # canonical app.event.Event with the SAME event_id.  Object identity
+    # (`is`) is not a durable architecture invariant.
+    assert isinstance(plugin.received[0], Event)
+    assert plugin.received[0].event_id == event.event_id
 
 
 # T4 — Event identity preserved through the full composition
@@ -162,7 +166,8 @@ def test_event_identity_is_preserved(global_session_manager):
     event = _make_event()
     runtime.pipeline.process(event)
 
-    assert plugin.received[0] is event
+    assert isinstance(plugin.received[0], Event)
+    assert plugin.received[0].event_id == event.event_id
 
 
 # T5 — RUNNING lifecycle filtering through production composition
@@ -184,7 +189,8 @@ def test_only_running_plugins_receive_event(global_session_manager):
     runtime.pipeline.process(event)
 
     assert len(running.received) == 1
-    assert running.received[0] is event
+    assert isinstance(running.received[0], Event)
+    assert running.received[0].event_id == event.event_id
     assert stopped.received == []
     assert loaded.received == []
 
@@ -203,7 +209,8 @@ def test_failing_plugin_does_not_block_other_plugins(global_session_manager):
     runtime.pipeline.process(event)
 
     assert len(recording.received) == 1
-    assert recording.received[0] is event
+    assert isinstance(recording.received[0], Event)
+    assert recording.received[0].event_id == event.event_id
 
 
 # T7 — Raw dict rejected at the canonical boundary
@@ -290,4 +297,5 @@ def test_existing_plugin_without_on_event_override_is_compatible(global_session_
     runtime.pipeline.process(event)
 
     assert len(recording.received) == 1
-    assert recording.received[0] is event
+    assert isinstance(recording.received[0], Event)
+    assert recording.received[0].event_id == event.event_id
