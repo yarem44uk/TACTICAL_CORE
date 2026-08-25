@@ -34,11 +34,27 @@ legacy non-durable path.
 from __future__ import annotations
 
 import logging
+import os
 import signal
+import sys
 import threading
 from typing import Callable, Optional, Sequence
 
+# --- WO-033 — import-path bootstrap -------------------------------------------
+# The ``app`` package lives under ``backend/``.  When the production entrypoint is
+# invoked as ``python3 -m backend.main`` from the repository root, the ``backend/``
+# directory is NOT on ``sys.path`` (only the repo root is), so the ``app.*``
+# imports below fail with ``ModuleNotFoundError: No module named 'app'``.  This
+# self-contained bootstrap inserts the directory containing this module
+# (``backend/``) ahead of those imports so the documented invocation works without
+# any external ``PYTHONPATH``.  It touches no other module and performs no
+# repository-wide import migration.
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
 from app.bootstrap import ProductionRuntime, create_production_runtime
+from app.database.database import initialize_database
 from app.event_sources.config.adapter_factory import AdapterFactory
 from app.event_sources.config.provider import ISourceConfigProvider
 from app.event_sources.source_registration import (
@@ -181,16 +197,63 @@ def run_production_process(
     return registered
 
 
+def configure_production_database(
+    database_url: Optional[str],
+) -> bool:
+    """Configure the canonical database for production durable delivery.
+
+    WO-033 — the production entrypoint must configure the existing
+    ``DatabaseSessionManager`` BEFORE constructing the fail-closed production
+    runtime, otherwise ``create_production_runtime(require_durable_delivery=True)``
+    reaches the WO-030 guard and terminates because no configured manager exists.
+
+    Fail-closed: when no explicit ``database_url`` is supplied, this returns
+    ``False`` and the process refuses to proceed.  It NEVER silently continues
+    without durable delivery, never downgrades to a non-durable path, and never
+    creates an alternate backend.
+
+    Args:
+        database_url: Explicit SQLAlchemy database URL (e.g. from the
+            ``DATABASE_URL`` environment variable).
+
+    Returns:
+        ``True`` if the database was configured; ``False`` (fail-closed) if no
+        explicit configuration was supplied.
+    """
+    if not database_url:
+        logger.error(
+            "WO-033: no explicit database configuration supplied; production "
+            "durable delivery requires a DATABASE_URL. Failing closed rather "
+            "than starting without durable delivery."
+        )
+        return False
+
+    # Configure the canonical DatabaseSessionManager and initialise the
+    # database infrastructure (creates the required tables).  This uses the
+    # existing infrastructure; it does not redesign it.
+    initialize_database(database_url=database_url, create_tables=True)
+    logger.info("WO-033: production database configured.")
+    return True
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Real production entrypoint invoked by ``python -m backend.main``.
 
-    Constructs the fail-closed production runtime, installs SIGINT/SIGTERM
-    handlers, starts, waits, and performs graceful shutdown.
+    Configures the database (fail-closed), constructs the fail-closed
+    production runtime, installs SIGINT/SIGTERM handlers, starts, waits, and
+    performs graceful shutdown.
 
     Returns:
-        Process exit code (0 on clean shutdown).
+        Process exit code (0 on clean shutdown; 2 on fail-closed config error).
     """
     logging.basicConfig(level=logging.INFO)
+
+    # WO-033 — explicit, fail-closed database configuration.  The process MUST
+    # NOT proceed without durable delivery.  If no DATABASE_URL is supplied we
+    # fail closed with a clear configuration error.
+    database_url = os.environ.get("DATABASE_URL")
+    if not configure_production_database(database_url):
+        return 2
 
     # Fail-closed construction: durable delivery is mandatory.  If the durable
     # post-commit delivery dependency is unavailable, this raises and the
