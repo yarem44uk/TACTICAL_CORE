@@ -17,10 +17,13 @@ Coverage:
 
 from __future__ import annotations
 
+import os
 import signal
+import tempfile
 import threading
 
 import pytest
+import sqlalchemy
 
 import backend.main as entrypoint
 from app.event_sources.config.adapter_factory import AdapterFactory
@@ -275,3 +278,86 @@ def test_entrypoint_does_not_silently_downgrade(monkeypatch) -> None:
     entrypoint.create_production_entrypoint_runtime()
     # The runtime is constructed exactly once, with durable delivery required.
     assert calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# WO-034 — production entrypoint operability regression coverage
+# ---------------------------------------------------------------------------
+# These tests cover the two production behaviors introduced by WO-033 and
+# must remain valid against the WO-032 entrypoint lifecycle:
+#   AC-01  fail-closed database configuration (no DATABASE_URL)
+#   AC-02  successful database configuration (valid DATABASE_URL)
+#   AC-03  main() fail-closed behavior when DATABASE_URL is absent
+#   AC-04  _BACKEND_DIR import-path bootstrap idempotency
+# They are test-only: they exercise the real WO-033 code paths and do not
+# modify production architecture.
+
+# AC-01 — Missing DATABASE_URL is fail-closed and never touches the database.
+def test_wo034_configure_database_missing_url_fails_closed(monkeypatch) -> None:
+    called: list[str] = []
+
+    def _recording_initialize_database(**kwargs):
+        called.append(kwargs)
+        raise AssertionError("initialize_database must not be called without a URL")
+
+    monkeypatch.setattr(entrypoint, "initialize_database", _recording_initialize_database)
+
+    # None URL -> fail closed, no DB initialization.
+    assert entrypoint.configure_production_database(None) is False
+    # Empty string URL -> fail closed, no DB initialization.
+    assert entrypoint.configure_production_database("") is False
+
+    assert called == []
+
+
+# AC-02 — Valid DATABASE_URL configures real, usable database infrastructure.
+def test_wo034_configure_database_valid_url_initializes_real_db() -> None:
+    import app.database.database as database_mod
+    import app.database.session as session_mod
+
+    tmp = tempfile.mkdtemp(prefix="wo034-")
+    db = os.path.join(tmp, "db.sqlite")
+    url = f"sqlite:///{db}"
+    try:
+        assert entrypoint.configure_production_database(url) is True
+
+        # The real DatabaseSessionManager must now be configured and usable.
+        manager = session_mod.get_session_manager()
+        assert manager is not None
+        with manager.session(commit=False) as s:
+            s.execute(sqlalchemy.text("SELECT 1"))
+    finally:
+        # Reset global database/session state so we do not leak into other tests.
+        database_mod._database_manager = None
+        session_mod._session_manager = None
+
+
+# AC-03 — main() fail-closed: no DATABASE_URL -> exit 2, runtime never built.
+def test_wo034_main_without_database_url_fails_closed(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    runtime_built: list[bool] = []
+
+    def _recording_create_runtime(**kwargs):
+        runtime_built.append(True)
+        raise AssertionError("runtime must not be constructed without DB config")
+
+    monkeypatch.setattr(
+        entrypoint, "create_production_entrypoint_runtime", _recording_create_runtime
+    )
+
+    assert entrypoint.main([]) == 2
+    assert runtime_built == []
+
+
+# AC-04 — _BACKEND_DIR import-path bootstrap is idempotent.
+def test_wo034_backend_dir_bootstrap_is_idempotent() -> None:
+    import importlib
+    import sys as _sys
+
+    backend_dir = entrypoint._BACKEND_DIR
+    assert _sys.path.count(backend_dir) == 1
+
+    # Re-importing the entrypoint must not duplicate the backend dir.
+    importlib.reload(entrypoint)
+    assert _sys.path.count(backend_dir) == 1
