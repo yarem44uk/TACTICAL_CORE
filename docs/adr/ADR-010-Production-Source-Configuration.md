@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25
 **Status:** Accepted
-**Deciders:** Chief Systems Architect (pending review)
+**Deciders:** Chief Systems Architect
 
 ---
 
@@ -385,5 +385,4 @@ infrastructure.
 
 ## Status
 
-**Status:** Accepted — awaiting review/approval per repository governance. This
-record does not authorize implementation.
+**Status:** Accepted. This record does not authorize implementation.
