@@ -73,7 +73,13 @@ logger = logging.getLogger(__name__)
 # registers whatever enabled source definitions an embedding provider supplies.
 # It does NOT fabricate a hidden production source catalog, and it does NOT
 # redesign source adapters (out of WO-032 scope).
-SOURCE_CONFIGURATION_GAP = True
+# WO-036 (ADR-010 Option B): the concrete production ``ISourceConfigProvider`` and
+# the production ``AdapterFactory`` (all five adapter types) are now supplied by
+# ``app.event_sources.config.production_source_config``.  The source-configuration
+# gap documented by WO-032 is closed.  The production process registers whatever
+# enabled source definitions the static catalog declares, and fails closed if the
+# catalog is unavailable.
+SOURCE_CONFIGURATION_GAP = False
 
 
 def create_production_entrypoint_runtime(
@@ -291,22 +297,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _production_source_provider() -> Optional[ISourceConfigProvider]:
-    """Return the production source-configuration provider, if configured.
+    """Return the concrete production source-configuration provider.
 
-    Returns ``None`` until a concrete production ``ISourceConfigProvider`` is
-    supplied by an embedding deployment (see ``SOURCE_CONFIGURATION_GAP``).
+    WO-036 (ADR-010 Option B): returns a concrete ``ProductionSourceConfigProvider``
+    backed by the static Python source catalog.  The process registers whatever
+    enabled source definitions the catalog declares, and FAILS CLOSED if the
+    catalog is unavailable rather than silently starting with zero sources.
     """
-    return None
+    from app.event_sources.config.production_source_config import (
+        build_production_source_provider,
+    )
+
+    return build_production_source_provider()
 
 
 def _production_adapter_factory() -> AdapterFactory:
     """Return the production AdapterFactory.
 
-    Embedding deployments register the concrete source-adapter types they use
-    (e.g. ``register_mqtt_adapter``) here.  The entrypoint does not force any
-    protocol adapter to appear.
+    WO-036 (ADR-010 Option B): returns an ``AdapterFactory`` with all five
+    known production source-adapter types registered through the existing
+    registration helpers (atak, mqtt, signal, radio, telegram).
     """
-    return AdapterFactory()
+    from app.event_sources.config.production_source_config import (
+        build_production_adapter_factory,
+    )
+
+    return build_production_adapter_factory()
 
 
 if __name__ == "__main__":  # pragma: no cover - process entrypoint
