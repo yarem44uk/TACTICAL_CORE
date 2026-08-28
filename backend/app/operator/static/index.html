@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tactical Core — Offline Operator UI</title>
+  <link rel="stylesheet" href="operator.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1 class="app-title">Tactical Core</h1>
+    <span class="app-subtitle">Offline Operator UI</span>
+    <button id="refresh-btn" class="btn" type="button">Refresh</button>
+  </header>
+
+  <section id="health-panel" class="panel health-panel">
+    <h2 class="panel-title">Health</h2>
+    <div id="health-content" class="health-content">Loading…</div>
+  </section>
+
+  <nav class="view-tabs" aria-label="Views">
+    <button id="tab-events" class="tab active" type="button">Events</button>
+    <button id="tab-entities" class="tab" type="button">Entities</button>
+  </nav>
+
+  <main class="app-main">
+    <!-- EVENTS VIEW -->
+    <section id="view-events" class="view active">
+      <div class="toolbar">
+        <input id="ev-source" class="input" type="text" placeholder="source" />
+        <input id="ev-type" class="input" type="text" placeholder="event_type" />
+        <input id="ev-from" class="input" type="text" placeholder="from_time (ISO)" />
+        <input id="ev-to" class="input" type="text" placeholder="to_time (ISO)" />
+        <button id="ev-apply" class="btn" type="button">Apply</button>
+      </div>
+      <div id="event-feed" class="feed">Loading…</div>
+      <div class="pager">
+        <button id="ev-prev" class="btn" type="button" disabled>Previous</button>
+        <button id="ev-next" class="btn" type="button" disabled>Next</button>
+      </div>
+    </section>
+
+    <!-- ENTITIES VIEW -->
+    <section id="view-entities" class="view">
+      <div class="toolbar">
+        <input id="en-type" class="input" type="text" placeholder="entity_type" />
+        <button id="en-apply" class="btn" type="button">Apply</button>
+      </div>
+      <div id="entity-list" class="feed">Loading…</div>
+    </section>
+  </main>
+
+  <!-- DETAIL MODAL -->
+  <div id="detail-modal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="detail-title" class="modal-title">Detail</h2>
+        <button id="detail-close" class="btn" type="button">Close</button>
+      </div>
+      <div id="detail-body" class="modal-body">…</div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <span id="footer-status">Offline operator UI</span>
+  </footer>
+
+  <script src="operator.js"></script>
+</body>
+</html>

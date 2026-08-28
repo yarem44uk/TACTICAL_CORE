@@ -18,11 +18,13 @@ The factory does NOT launch uvicorn. The separate ``entrypoint`` does that.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.database.session import get_session_manager
 from app.entity_relations.sqlalchemy_relation_repository import (
@@ -44,6 +46,9 @@ from app.operator.service import (
 )
 
 API_PREFIX = "/api/v1/operator"
+
+# Directory containing the offline operator UI static assets (WO-037-03).
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,24 @@ def create_operator_app(
     app = FastAPI(title=title, version=version)
     app.state.operator_service = service
     app.include_router(router)
+
+    # -- offline operator UI (WO-037-03) ------------------------------------
+    # Served ONLY by this operator process (ADR-011 §13). Self-contained
+    # local HTML/CSS/JS with zero external/CDN dependencies. Mounted read-only
+    # static assets plus an explicit index route. This never touches the
+    # durable engine and is independent of backend/main.py.
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def _operator_index() -> HTMLResponse:
+            index_file = STATIC_DIR / "index.html"
+            if not index_file.is_file():
+                return HTMLResponse(
+                    content="<h1>Tactical Core Operator UI</h1><p>index.html not found</p>",
+                    status_code=503,
+                )
+            return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
 
     # -- structured error contract (400 / 404 / 503 / 500) --------------------
     # Registered on the app instance (APIRouter has no exception_handler).
