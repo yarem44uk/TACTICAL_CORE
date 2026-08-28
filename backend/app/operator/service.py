@@ -220,6 +220,63 @@ class OperatorService:
             ) from exc
         return {"entity_id": entity_id, "relations": rows}
 
+    # -- SSE realtime read layer (WO-037-04) ---------------------------------
+
+    def max_durable_seq(self) -> int:
+        """Return the highest authoritative durable ``seq`` (or 0 if empty).
+
+        Read-only helper used by the SSE stream to determine the current tail
+        of the authoritative event log. Never writes, never dispatches, never
+        creates durable SSE state.
+
+        Raises:
+            ReadDependencyUnavailableError: authoritative read dependency
+                unavailable (HTTP 503).
+        """
+        try:
+            return int(self._events.max_seq())
+        except Exception as exc:  # noqa: BLE001 - translate to 503
+            raise ReadDependencyUnavailableError(
+                "authoritative event store unavailable"
+            ) from exc
+
+    def events_after_seq(self, seq: int) -> List[Dict[str, Any]]:
+        """Return authoritative durable events with ``seq`` strictly greater
+        than ``seq``, ordered deterministically by ``seq`` ASC.
+
+        This is the read-only basis for SSE resume / new-event detection. It
+        delegates to the authoritative repository's ``iter_after_seq`` and never
+        mutates durable state, checkpoints, or projections.
+
+        Args:
+            seq: the last durable ``seq`` the client has seen (``Last-Event-ID``).
+
+        Returns:
+            A list of ``{"seq": int, "event": {...}}`` dicts in seq order.
+
+        Raises:
+            ReadDependencyUnavailableError: authoritative read dependency
+                unavailable (HTTP 503).
+        """
+        try:
+            pairs = self._events.iter_after_seq(int(seq))
+        except Exception as exc:  # noqa: BLE001 - translate to 503
+            raise ReadDependencyUnavailableError(
+                "authoritative event store unavailable"
+            ) from exc
+        return [
+            {"seq": int(s), "event": _event_to_dict(e)} for s, e in pairs
+        ]
+
+    def latest_events(self, limit: int = 50) -> Dict[str, Any]:
+        """Return the most recent authoritative durable events (initial SSE
+        snapshot) as a deterministic ``{events, next_cursor}`` page.
+
+        Read-only; delegates to ``query_events`` with a bounded ``limit``.
+        ``limit`` is clamped to the repository's bounded maximum.
+        """
+        return self.list_events(limit=limit)
+
     # -- health --------------------------------------------------------------
 
     def health(self) -> Dict[str, Any]:
