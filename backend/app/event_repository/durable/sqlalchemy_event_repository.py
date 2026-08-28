@@ -376,6 +376,108 @@ class SQLAlchemyEventRepository(IEventRepository):
             if (r.event_metadata or {}).get("correlation_id") == correlation_id
         ]
 
+    # -- WO-037-01: additive read-only operator event feed -------------------
+
+    def query_events(
+        self,
+        *,
+        source: Optional[str] = None,
+        event_type: Optional[str] = None,
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        limit: int = 50,
+        cursor: Optional[int] = None,
+    ) -> "tuple[List[Event], Optional[int]]":
+        """Return ``(events, next_cursor)`` for the operator event feed.
+
+        Deterministic keyset/cursor pagination over the authoritative durable
+        ``seq`` column (monotonic, ``ORDER BY seq ASC``). The cursor is the last
+        ``seq`` returned; ``next_cursor`` is ``None`` on the final page.
+
+        This method is ADDITIVE and READ-ONLY:
+          * no offset pagination against the durable event table;
+          * filtering/pagination applied at the database query layer;
+          * ``limit`` is clamped to a bounded maximum;
+          * no persistence side effects, no dispatch, no retry, no reconstruction;
+          * does not modify the durable event schema or canonical event model.
+
+        Args:
+            source: optional authoritative source filter.
+            event_type: optional authoritative event-type string filter.
+            from_time: optional inclusive lower timestamp bound (naive treated
+                as UTC).
+            to_time: optional exclusive upper timestamp bound.
+            limit: requested page size, clamped to ``[1, 200]``.
+            cursor: opaque continuation cursor — the last durable ``seq``.
+                Only an integer (or ``None``) is accepted; malformed values are
+                rejected by raising ``ValueError``.
+
+        Returns:
+            ``(events, next_cursor)``. ``next_cursor`` is the ``seq`` of the
+            last returned event, or ``None`` when there are no further rows.
+
+        Raises:
+            ValueError: if ``cursor`` is provided but not an int, or ``limit``
+                is not a positive int, or ``from_time`` > ``to_time``.
+        """
+        if cursor is not None and not isinstance(cursor, int):
+            raise ValueError("cursor must be an integer seq or None")
+        if isinstance(cursor, bool):
+            raise ValueError("cursor must be an integer seq or None")
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("limit must be a positive integer")
+        if limit < 1:
+            raise ValueError("limit must be a positive integer")
+        limit = min(limit, 200)
+        if from_time is not None and to_time is not None:
+            if from_time > to_time:
+                raise ValueError("from_time must not be after to_time")
+
+        stmt = select(DurableCanonicalEvent)
+        if cursor is not None:
+            stmt = stmt.where(DurableCanonicalEvent.seq > int(cursor))
+        if source is not None:
+            stmt = stmt.where(DurableCanonicalEvent.source == source)
+        if event_type is not None:
+            stmt = stmt.where(DurableCanonicalEvent.event_type == event_type)
+        if from_time is not None:
+            stmt = stmt.where(DurableCanonicalEvent.timestamp >= from_time)
+        if to_time is not None:
+            stmt = stmt.where(DurableCanonicalEvent.timestamp < to_time)
+        # Fetch limit+1 to detect whether another page exists.
+        stmt = stmt.order_by(DurableCanonicalEvent.seq.asc()).limit(limit + 1)
+
+        with self.session_manager.session(commit=False) as session:
+            rows = list(session.execute(stmt).scalars().all())
+
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        events = [self._from_persistent(r) for r in page_rows]
+        next_cursor = None
+        if has_more:
+            next_cursor = page_rows[-1].seq
+        return events, next_cursor
+
+    def get_durable_event(self, event_id: str) -> "Optional[tuple[int, Event]]":
+        """Return ``(seq, Event)`` for one authoritative durable event.
+
+        Additive, read-only helper that surfaces the authoritative durable
+        ``seq`` alongside the canonical event for operator event-detail display.
+        Returns ``None`` when the event_id is not durably persisted.
+
+        Does not dispatch, retry, reconstruct, or mutate any state.
+        """
+        with self.session_manager.session(commit=False) as session:
+            stmt = (
+                select(DurableCanonicalEvent)
+                .where(DurableCanonicalEvent.event_id == event_id)
+                .limit(1)
+            )
+            row = session.execute(stmt).scalar_one_or_none()
+        if row is None:
+            return None
+        return row.seq, self._from_persistent(row)
+
     def count(self) -> int:
         """Return the number of durably persisted canonical events."""
         with self.session_manager.session(commit=False) as session:
