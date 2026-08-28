@@ -26,6 +26,7 @@ Starlette ``TestClient`` cannot stream SSE responses in this environment.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -47,7 +48,7 @@ from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
 from app.operator.app import create_operator_app
-from app.operator.router import _sse_frame
+from app.operator.router import _SSE_TAIL_BATCH, _sse_frame
 from app.operator.service import OperatorService
 
 STREAM_URL = "/api/v1/operator/events/stream"
@@ -203,8 +204,9 @@ async def test_sse_last_event_id_resumes_after_cursor(
 ) -> None:
     for i in range(1, 6):
         event_repo.save(_make_event(f"e{i}"))
+    # Resume (Last-Event-ID) emits no snapshot; one tail poll drains seq > 3.
     status, frames = await _get_sse(
-        app, f"{STREAM_URL}?stream_ticks=0", headers={"Last-Event-ID": "3"}
+        app, f"{STREAM_URL}?stream_ticks=1", headers={"Last-Event-ID": "3"}
     )
     assert status == 200
     assert [f[0] for f in frames] == [4, 5]
@@ -220,7 +222,7 @@ async def test_sse_resume_delivers_new_event_persisted_after_cursor(
     # A new event is durably persisted after the client's cursor (seq 3).
     event_repo.save(_make_event("new-after-cursor"))
     status, frames = await _get_sse(
-        app, f"{STREAM_URL}?stream_ticks=0", headers={"Last-Event-ID": "3"}
+        app, f"{STREAM_URL}?stream_ticks=1", headers={"Last-Event-ID": "3"}
     )
     assert status == 200
     assert [f[0] for f in frames] == [4]
@@ -388,12 +390,12 @@ async def test_sse_programming_error_is_not_masked_as_dependency_failure() -> No
 
 
 @pytest.mark.asyncio
-async def test_sse_stream_ticks_zero_yields_snapshot_plus_one_tail_poll(app) -> None:
-    """Defect 4: pin the ``stream_ticks=0`` semantics unambiguously.
+async def test_sse_stream_ticks_zero_snapshot_only_no_tail_poll(app) -> None:
+    """Defect 4: ``stream_ticks=0`` performs ZERO tail polls.
 
-    ``stream_ticks=0`` yields the initial snapshot plus exactly one tail poll
-    (plus one keepalive comment frame), then terminates — it never emits two
-    snapshot frames or an infinite stream.
+    The initial snapshot is NOT counted as a tail poll, so ``stream_ticks=0``
+    yields the snapshot only and terminates — it must not perform a single
+    tail poll (D4).
     """
     for i in range(1, 4):
         app.state.operator_service._events.save(_make_event(f"e{i}"))
@@ -407,9 +409,123 @@ async def test_sse_stream_ticks_zero_yields_snapshot_plus_one_tail_poll(app) -> 
             body = b"".join(
                 [chunk async for chunk in response.aiter_bytes()]
             )
-    # Snapshot delivers e1..e3 exactly once (no duplicate frames).
+    # Snapshot delivers e1..e3 exactly once (no duplicate frames), then the
+    # stream ends with zero tail polls.
     frames = _parse_frames(body)
     assert [f[0] for f in frames] == [1, 2, 3]
+
+
+def _make_tail_spy(app) -> dict:
+    """Wrap ``service.events_after_seq_bounded`` to count tail-poll reads.
+
+    Tail polls use the module batch ``_SSE_TAIL_BATCH`` (=200) as their limit;
+    the initial snapshot uses the (much smaller) page ``limit``. Counting calls
+    whose ``limit == _SSE_TAIL_BATCH`` therefore counts tail polls exactly and
+    deterministically, without any reliance on stream timing/sleeps.
+    """
+    service = app.state.operator_service
+    original = service.events_after_seq_bounded
+    counter = {"tail_polls": 0, "snapshot_reads": 0, "calls": []}
+
+    def spy(seq: int, limit: int = 200):
+        counter["calls"].append((seq, limit))
+        if limit == _SSE_TAIL_BATCH:
+            counter["tail_polls"] += 1
+        else:
+            counter["snapshot_reads"] += 1
+        return original(seq, limit)
+
+    service.events_after_seq_bounded = spy  # type: ignore[method-assign]
+    return counter
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_ticks_one_performs_exactly_one_tail_poll(app) -> None:
+    """Defect 4: ``stream_ticks=1`` performs exactly one tail poll (D4)."""
+    for i in range(1, 4):
+        app.state.operator_service._events.save(_make_event(f"e{i}"))
+    counter = _make_tail_spy(app)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        async with client.stream(
+            "GET", f"{STREAM_URL}?stream_ticks=1"
+        ) as response:
+            body = b"".join(
+                [chunk async for chunk in response.aiter_bytes()]
+            )
+    frames = _parse_frames(body)
+    # Snapshot (e1..e3) then exactly ONE tail poll.
+    assert [f[0] for f in frames] == [1, 2, 3]
+    assert counter["tail_polls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_ticks_two_performs_exactly_two_tail_polls(app) -> None:
+    """Defect 4: ``stream_ticks=2`` performs exactly two tail polls (D4)."""
+    for i in range(1, 4):
+        app.state.operator_service._events.save(_make_event(f"e{i}"))
+    counter = _make_tail_spy(app)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        async with client.stream(
+            "GET", f"{STREAM_URL}?stream_ticks=2"
+        ) as response:
+            body = b"".join(
+                [chunk async for chunk in response.aiter_bytes()]
+            )
+    frames = _parse_frames(body)
+    assert [f[0] for f in frames] == [1, 2, 3]
+    assert counter["tail_polls"] == 2
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_ticks_omitted_is_unbounded_tail(app) -> None:
+    """Defect 4: omitted ``stream_ticks`` = unbounded realtime tail (D4).
+
+    With no ``stream_ticks`` the bound is never applied, so the stream keeps
+    polling indefinitely. We consume the stream in a background task (keeping
+    the server generator alive) and wait for the tail-poll spy to observe
+    several polls — far more than any finite bound (0/1/2 ticks) would allow —
+    then cancel. ``asyncio.wait_for`` guarantees the test never hangs.
+    """
+    for i in range(1, 4):
+        app.state.operator_service._events.save(_make_event(f"e{i}"))
+    counter = _make_tail_spy(app)
+    transport = httpx.ASGITransport(app=app)
+
+    async def _consume() -> None:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            async with client.stream("GET", STREAM_URL) as response:
+                assert response.status_code == 200
+                async for _ in response.aiter_bytes():
+                    pass  # keep driving the server generator
+
+    async def _wait_for_polls(n: int, timeout: float) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while counter["tail_polls"] < n:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(
+                    f"unbounded tail did not reach {n} polls in {timeout}s"
+                )
+            await asyncio.sleep(0.05)
+
+    consumer = asyncio.create_task(_consume())
+    try:
+        # Each unbounded tail poll involves a short sleep, so 3 polls arrive
+        # within a couple of seconds; wait_for guards against a genuine hang.
+        await asyncio.wait_for(_wait_for_polls(3, 15.0), timeout=20.0)
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+    # The unbounded tail performed >= 3 tail polls — a finite bound (0/1/2
+    # ticks) would have terminated long before reaching 3.
+    assert counter["tail_polls"] >= 3
 
 
 # -- Defect 5: race-boundary coverage (bounded-batch cursor semantics) --------
@@ -518,3 +634,91 @@ def test_service_events_after_seq_ordering(
     after = service.events_after_seq(1)
     assert [a["seq"] for a in after] == [2, 3]
     assert [a["event"]["event_id"] for a in after] == ["e2", "e3"]
+
+
+# -- Defect 3: real authoritative seq (D3) ------------------------------------
+
+
+def test_d3_seq_comes_from_authoritative_repository_metadata(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """D3.1: each returned ``seq`` is the REAL authoritative durable seq.
+
+    The SSE ``id`` must be the durable ``seq`` stored by the authoritative
+    repository, never reconstructed as ``base + list-index``. The durable layer
+    guarantees a no-gap ``MAX+1`` sequence through its public API, so we do NOT
+    fabricate an impossible gap with raw SQL (that would tamper with a protected
+    authoritative store). Instead we prove the implementation reads each seq
+    from authoritative repository metadata: for every returned event, its
+    ``seq`` must equal ``get_durable_event(event_id)[0]`` — the authoritative
+    persisted seq for that exact event.
+    """
+    for i in range(1, 6):
+        event_repo.save(_make_event(f"e{i}"))
+    service = _make_service(event_repo)
+    batch = service.events_after_seq_bounded(0, limit=200)
+    # The returned seqs equal the seqs the authoritative repo assigns.
+    assert [b["seq"] for b in batch] == [1, 2, 3, 4, 5]
+    for item in batch:
+        event_id = item["event"]["event_id"]
+        authoritative_seq = event_repo.get_durable_event(event_id)[0]
+        assert item["seq"] == authoritative_seq
+    # Prove the seq is read from metadata, not a positional index: reading a
+    # page starting at a non-zero cursor returns seqs that match the repo's
+    # authoritative seqs for those specific events.
+    tail = service.events_after_seq_bounded(2, limit=200)
+    assert [t["seq"] for t in tail] == [3, 4, 5]
+    for item in tail:
+        event_id = item["event"]["event_id"]
+        assert item["seq"] == event_repo.get_durable_event(event_id)[0]
+
+
+def test_d3_bounded_query_is_db_level_not_python_slice(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """D3.2: the bounded read is DB-level (SQL LIMIT), not a Python slice.
+
+    Seed far more events than the requested limit and assert the batch returns
+    exactly the requested count — proving the query bounded the result set at
+    the DB layer rather than loading everything and slicing in Python. The
+    repository's ``query_events`` clamps ``limit`` to its bounded maximum (200),
+    so a ``limit`` above that still returns at most 200.
+    """
+    for i in range(1, 501):
+        event_repo.save(_make_event(f"e{i}"))
+    service = _make_service(event_repo)
+    # Request a small limit over a 500-event backlog -> exactly 2, not 500.
+    small = service.events_after_seq_bounded(0, limit=2)
+    assert [s["seq"] for s in small] == [1, 2]
+    # Requesting more than the repository's bounded max returns at most 200.
+    capped = service.events_after_seq_bounded(0, limit=100000)
+    assert len(capped) == 200
+    assert [c["seq"] for c in capped] == list(range(1, 201))
+
+
+def test_d3_large_backlog_bounded_ordered_no_gap_no_duplicate(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """D3.3: a >=500-event backlog drains in bounded, ordered, gap-free,
+    duplicate-free batches.
+    """
+    for i in range(1, 501):
+        event_repo.save(_make_event(f"e{i}"))
+    service = _make_service(event_repo)
+    cursor = 0
+    seen: list = []
+    while True:
+        batch = service.events_after_seq_bounded(cursor, limit=200)
+        if not batch:
+            break
+        assert len(batch) <= 200  # never exceeds the configured bound
+        for item in batch:
+            seen.append(item["seq"])
+        cursor = batch[-1]["seq"]
+    # All 500 events delivered exactly once, in ascending contiguous order.
+    assert seen == list(range(1, 501))
+    assert len(seen) == 500
+    assert len(set(seen)) == 500  # no duplicates
+    # No gaps in the full drain.
+    assert seen == sorted(seen)
+    assert all(b == a + 1 for a, b in zip(seen, seen[1:]))

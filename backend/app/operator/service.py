@@ -297,12 +297,13 @@ class OperatorService:
         ``LIMIT`` on the authoritative durable table — no second event store,
         no pagination architecture added to durable core.
 
-        Per-event ``seq`` is reconstructed from the authoritative durable
-        invariant: the canonical event log is append-only with a monotonic
-        ``MAX+1`` integer ``seq`` (no deletions, no gaps), so the i-th event of
-        a page starting after ``seq`` has ``seq = seq + i + 1``. This invariant
-        is what makes the SSE ``id`` (= durable seq) deterministic without an
-        extra per-event lookup.
+        Each returned ``seq`` is the REAL authoritative durable ``seq`` read
+        from the authoritative repository metadata (``get_durable_event``
+        returns the persisted ``(seq, Event)`` pair), NOT reconstructed as
+        ``base + list-index``. The SSE ``id`` therefore always belongs to the
+        concrete durable event it labels, exactly as the authoritative log
+        stored it — correct even if the durable sequence ever contained gaps
+        (e.g. an idempotent duplicate-save rollback).
 
         Args:
             seq: last durable ``seq`` already emitted (exclusive lower bound).
@@ -310,7 +311,7 @@ class OperatorService:
 
         Returns:
             A list of at most ``limit`` ``{"seq": int, "event": {...}}`` dicts
-            in ascending ``seq`` order.
+            in ascending authoritative ``seq`` order.
 
         Raises:
             ReadDependencyUnavailableError: authoritative read dependency
@@ -320,16 +321,26 @@ class OperatorService:
             events, _next_cursor = self._events.query_events(
                 cursor=int(seq), limit=int(limit)
             )
+            pairs = []
+            for e in events:
+                result = self._events.get_durable_event(e.event_id)
+                if result is None:
+                    # The event came from the authoritative log a moment ago;
+                    # its durable row must still exist. A None here is a data
+                    # inconsistency, not a dependency failure — surface it as an
+                    # unexpected internal error (500), never as a fake 503.
+                    raise RuntimeError(
+                        f"durable event {e.event_id!r} vanished between reads"
+                    )
+                pairs.append((int(result[0]), result[1]))
         except ReadDependencyUnavailableError:
             raise
         except sqlalchemy.exc.SQLAlchemyError as exc:
             raise ReadDependencyUnavailableError(
                 "authoritative event store unavailable"
             ) from exc
-        base = int(seq)
         return [
-            {"seq": base + i + 1, "event": _event_to_dict(e)}
-            for i, e in enumerate(events)
+            {"seq": int(s), "event": _event_to_dict(ev)} for s, ev in pairs
         ]
 
     def latest_events(self, limit: int = 50) -> Dict[str, Any]:

@@ -141,13 +141,14 @@ async def events_stream(
     tailed by polling the authoritative log (best-effort).
 
     ``stream_ticks`` (optional, testing knob): bounds the number of tail-poll
-    cycles performed after the initial snapshot. The stream always performs at
-    least one tail poll to detect events committed between the snapshot and the
-    first tail read, then terminates; i.e. ``stream_ticks=0`` yields the initial
-    snapshot plus one tail poll (plus one keepalive frame). When ``stream_ticks``
-    is omitted, the stream is the infinite realtime tail (production default,
-    never finite). This keeps the endpoint deterministic and testable without a
-    live indefinite connection.
+    cycles performed after the initial snapshot to EXACTLY that many polls.
+    The initial snapshot is NOT counted as a tail poll. Therefore:
+    ``stream_ticks=0`` yields the initial snapshot only (zero tail polls) and
+    terminates; ``stream_ticks=1`` yields the snapshot plus exactly one tail
+    poll; ``stream_ticks=2`` yields the snapshot plus exactly two tail polls.
+    When ``stream_ticks`` is omitted, the stream is the infinite realtime tail
+    (production default, never finite). This keeps the endpoint deterministic
+    and testable without a live indefinite connection.
 
     The stream is a seq-ordered tail over the authoritative event log. Event
     filtering (source / event_type / time range) is not part of the best-effort
@@ -206,9 +207,17 @@ async def events_stream(
             # Tail loop: drain the authoritative log in bounded batches
             # (best-effort), advancing the cursor only past events actually
             # emitted — no loss, no duplication, no second event store.
+            # ``stream_ticks=N`` performs EXACTLY N tail polls (the initial
+            # snapshot is NOT a tail poll); ``None`` = unbounded realtime tail.
             assert cursor is not None
             while True:
-                # Drain all currently-available events in bounded batches.
+                # Zero-poll bound: exit BEFORE doing any tail read. This makes
+                # ``stream_ticks=0`` terminate after the snapshot alone without
+                # relying on a decrement-after-poll (D4).
+                if remaining_ticks is not None and remaining_ticks <= 0:
+                    return
+                # One tail poll: drain all currently-available events in
+                # bounded batches.
                 while True:
                     items = await asyncio.to_thread(
                         service.events_after_seq_bounded, cursor, _SSE_TAIL_BATCH
@@ -223,7 +232,7 @@ async def events_stream(
                 yield ": keepalive\n\n"
                 if remaining_ticks is not None:
                     remaining_ticks -= 1
-                    if remaining_ticks < 0:
+                    if remaining_ticks <= 0:
                         return
                 await asyncio.sleep(_SSE_POLL_SECONDS)
         except asyncio.CancelledError:
