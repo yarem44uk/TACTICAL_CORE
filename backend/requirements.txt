@@ -9,3 +9,12 @@ mypy>=1.5.0
 
 # Development tools
 httpx>=0.24.0
+
+# Runtime — Operator Application Foundation (WO-037-02, ADR-011)
+# FastAPI + uvicorn run the separate read-only operator process. Declared
+# explicitly per ADR-011. FastAPI is pinned to the range actually installed
+# (0.141.x); uvicorn to the installed 0.52.x line. The operator process is a
+# consumer of the authoritative repositories and never starts the durable engine.
+fastapi>=0.141.0,<0.142
+uvicorn>=0.52.0,<0.53
+
