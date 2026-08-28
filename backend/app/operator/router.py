@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -24,6 +25,8 @@ from app.operator.service import (
     OperatorService,
     ReadDependencyUnavailableError,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -103,6 +106,10 @@ def list_events(
 _SSE_POLL_SECONDS = 0.5
 # Bounded initial snapshot page size (clamped to the repository maximum).
 _SSE_SNAPSHOT_DEFAULT = 50
+# Bounded operator tail batch size (WO-037-04 Defect 3). Each poll reads at
+# most this many durable events from the authoritative log so a burst never
+# materialises the whole post-cursor log in memory.
+_SSE_TAIL_BATCH = 200
 
 
 def _sse_frame(event_id: Optional[int], data: dict) -> str:
@@ -133,10 +140,14 @@ async def events_stream(
     most recent ``limit`` durable events is emitted, then new events are
     tailed by polling the authoritative log (best-effort).
 
-    ``stream_ticks`` (optional): bound the number of tail-poll iterations. When
-    provided, the stream ends normally after that many polls; when omitted the
-    stream is the infinite realtime tail. This makes the endpoint deterministic
-    and testable without a live indefinite connection.
+    ``stream_ticks`` (optional, testing knob): bounds the number of tail-poll
+    cycles performed after the initial snapshot. The stream always performs at
+    least one tail poll to detect events committed between the snapshot and the
+    first tail read, then terminates; i.e. ``stream_ticks=0`` yields the initial
+    snapshot plus one tail poll (plus one keepalive frame). When ``stream_ticks``
+    is omitted, the stream is the infinite realtime tail (production default,
+    never finite). This keeps the endpoint deterministic and testable without a
+    live indefinite connection.
 
     The stream is a seq-ordered tail over the authoritative event log. Event
     filtering (source / event_type / time range) is not part of the best-effort
@@ -146,6 +157,10 @@ async def events_stream(
     Read-only: this endpoint only reads the authoritative repository. It never
     writes, never dispatches, never retries, never modifies checkpoint or
     projection state, and never creates a second event store.
+
+    Blocking repository reads (synchronous SQLAlchemy) are offloaded with
+    ``asyncio.to_thread`` so they never block the asyncio event loop, and the
+    tail is read in bounded batches via ``events_after_seq_bounded``.
     """
     service: OperatorService = request.app.state.operator_service
 
@@ -168,8 +183,9 @@ async def events_stream(
 
     # Pre-flight availability check BEFORE streaming starts, so a dead
     # authoritative read dependency can still map to HTTP 503 (the status code
-    # cannot be changed after the first streamed byte).
-    service.max_durable_seq()
+    # cannot be changed after the first streamed byte). Offloaded so the check
+    # does not block the event loop either.
+    await asyncio.to_thread(service.max_durable_seq)
 
     async def _stream():  # noqa: ANN202 - async generator inferred
         cursor: Optional[int] = last_seq
@@ -177,21 +193,31 @@ async def events_stream(
         try:
             # Fresh connect: bounded initial snapshot of the most recent events.
             if cursor is None:
-                max_seq = service.max_durable_seq()
+                max_seq = await asyncio.to_thread(service.max_durable_seq)
                 snapshot_start = max(0, max_seq - page_limit)
-                for item in service.events_after_seq(snapshot_start):
+                for item in await asyncio.to_thread(
+                    service.events_after_seq_bounded, snapshot_start, page_limit
+                ):
                     cursor = item["seq"]
                     yield _sse_frame(cursor, item)
                 if cursor is None:
                     cursor = max_seq
 
-            # Tail loop: poll the authoritative log for new events (best-effort).
+            # Tail loop: drain the authoritative log in bounded batches
+            # (best-effort), advancing the cursor only past events actually
+            # emitted — no loss, no duplication, no second event store.
             assert cursor is not None
             while True:
-                items = service.events_after_seq(cursor)
-                for item in items:
-                    cursor = item["seq"]
-                    yield _sse_frame(cursor, item)
+                # Drain all currently-available events in bounded batches.
+                while True:
+                    items = await asyncio.to_thread(
+                        service.events_after_seq_bounded, cursor, _SSE_TAIL_BATCH
+                    )
+                    if not items:
+                        break
+                    for item in items:
+                        cursor = item["seq"]
+                        yield _sse_frame(cursor, item)
                 # Keepalive comment frame keeps the connection alive and lets
                 # a dropped client be detected. Standard SSE; no durable state.
                 yield ": keepalive\n\n"
@@ -203,11 +229,23 @@ async def events_stream(
         except asyncio.CancelledError:
             # Client disconnected / response cancelled. Close cleanly.
             return
-        except (ReadDependencyUnavailableError, Exception):  # noqa: BLE001
-            # Mid-stream read failure: signal honestly, never mask as success.
+        except ReadDependencyUnavailableError:
+            # Expected authoritative read-dependency failure mid-stream:
+            # signal honestly as a degraded SSE error, never mask as success.
             yield _sse_frame(
                 None,
                 {"event": "error", "error": "authoritative event store unavailable"},
+            )
+            return
+        except Exception:  # noqa: BLE001 - unexpected, log and close safely
+            # An unexpected programmer/runtime error (KeyError, TypeError,
+            # serialization, AttributeError, ...) is NOT a database failure. It
+            # is logged server-side and surfaced as a generic internal error
+            # frame — the traceback/secret material is never sent to the client.
+            logger.exception("unexpected error in SSE stream")
+            yield _sse_frame(
+                None,
+                {"event": "error", "error": "internal operator error"},
             )
             return
 

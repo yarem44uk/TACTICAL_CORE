@@ -28,6 +28,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import sqlalchemy.exc
+
 from app.entity_relations.sqlalchemy_relation_repository import (
     SQLAlchemyRelationRepository,
 )
@@ -235,7 +237,14 @@ class OperatorService:
         """
         try:
             return int(self._events.max_seq())
-        except Exception as exc:  # noqa: BLE001 - translate to 503
+        except ReadDependencyUnavailableError:
+            raise
+        except sqlalchemy.exc.SQLAlchemyError as exc:
+            # A genuine authoritative-database read failure is a dependency
+            # failure (503). Unexpected programmer/runtime errors (KeyError,
+            # TypeError, serialization, AttributeError, ...) are deliberately
+            # NOT translated to 503; they propagate and map to the generic 500
+            # internal-error contract (see app.py exception handlers).
             raise ReadDependencyUnavailableError(
                 "authoritative event store unavailable"
             ) from exc
@@ -247,6 +256,11 @@ class OperatorService:
         This is the read-only basis for SSE resume / new-event detection. It
         delegates to the authoritative repository's ``iter_after_seq`` and never
         mutates durable state, checkpoints, or projections.
+
+        Note:
+            This unbounded variant is retained for service-layer unit tests and
+            simple callers. The SSE streaming tail uses the bounded
+            :meth:`events_after_seq_bounded` so each read is a DB-bounded batch.
 
         Args:
             seq: the last durable ``seq`` the client has seen (``Last-Event-ID``).
@@ -260,12 +274,62 @@ class OperatorService:
         """
         try:
             pairs = self._events.iter_after_seq(int(seq))
-        except Exception as exc:  # noqa: BLE001 - translate to 503
+        except ReadDependencyUnavailableError:
+            raise
+        except sqlalchemy.exc.SQLAlchemyError as exc:
             raise ReadDependencyUnavailableError(
                 "authoritative event store unavailable"
             ) from exc
         return [
             {"seq": int(s), "event": _event_to_dict(e)} for s, e in pairs
+        ]
+
+    def events_after_seq_bounded(
+        self, seq: int, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Return at most ``limit`` durable events with ``seq`` strictly greater
+        than ``seq``, in ``seq`` order — a DB-bounded tail batch (WO-037-04).
+
+        This is the bounded operator-layer read used by the SSE streaming tail
+        so that a burst of events never materialises the whole post-cursor log
+        in memory. It delegates to the authoritative WO-037-01 keyset
+        ``query_events(cursor=seq, limit=limit)``, which applies a SQL-level
+        ``LIMIT`` on the authoritative durable table — no second event store,
+        no pagination architecture added to durable core.
+
+        Per-event ``seq`` is reconstructed from the authoritative durable
+        invariant: the canonical event log is append-only with a monotonic
+        ``MAX+1`` integer ``seq`` (no deletions, no gaps), so the i-th event of
+        a page starting after ``seq`` has ``seq = seq + i + 1``. This invariant
+        is what makes the SSE ``id`` (= durable seq) deterministic without an
+        extra per-event lookup.
+
+        Args:
+            seq: last durable ``seq`` already emitted (exclusive lower bound).
+            limit: maximum batch size; clamped to the repository bounded max.
+
+        Returns:
+            A list of at most ``limit`` ``{"seq": int, "event": {...}}`` dicts
+            in ascending ``seq`` order.
+
+        Raises:
+            ReadDependencyUnavailableError: authoritative read dependency
+                unavailable (HTTP 503).
+        """
+        try:
+            events, _next_cursor = self._events.query_events(
+                cursor=int(seq), limit=int(limit)
+            )
+        except ReadDependencyUnavailableError:
+            raise
+        except sqlalchemy.exc.SQLAlchemyError as exc:
+            raise ReadDependencyUnavailableError(
+                "authoritative event store unavailable"
+            ) from exc
+        base = int(seq)
+        return [
+            {"seq": base + i + 1, "event": _event_to_dict(e)}
+            for i, e in enumerate(events)
         ]
 
     def latest_events(self, limit: int = 50) -> Dict[str, Any]:

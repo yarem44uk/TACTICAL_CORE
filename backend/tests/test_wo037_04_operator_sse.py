@@ -32,6 +32,7 @@ import tempfile
 
 import httpx
 import pytest
+import sqlalchemy.exc
 
 from app.database.session import DatabaseSessionManager
 from app.entity_relations.sqlalchemy_relation_repository import (
@@ -47,6 +48,7 @@ from app.event_repository.durable.sqlalchemy_event_repository import (
 )
 from app.operator.app import create_operator_app
 from app.operator.router import _sse_frame
+from app.operator.service import OperatorService
 
 STREAM_URL = "/api/v1/operator/events/stream"
 
@@ -322,11 +324,15 @@ async def test_sse_invalid_stream_ticks_returns_400(app) -> None:
 
 @pytest.mark.asyncio
 async def test_sse_read_dependency_unavailable_returns_503() -> None:
-    """A failing event repository -> pre-flight availability check -> 503."""
+    """A genuine authoritative-database failure -> pre-flight check -> 503."""
 
     class _FailingEventRepo:
         def max_seq(self) -> int:
-            raise RuntimeError("db down")
+            # A real DB-down surfaces as a SQLAlchemy dependency error, which
+            # the operator service classifies as 503 (not a programming error).
+            raise sqlalchemy.exc.OperationalError(
+                "SELECT ...", {}, Exception("db down")
+            )
 
     app = create_operator_app(
         event_repository=_FailingEventRepo(),  # type: ignore[arg-type]
@@ -345,6 +351,152 @@ async def test_sse_read_dependency_unavailable_returns_503() -> None:
             assert response.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_sse_programming_error_is_not_masked_as_dependency_failure() -> None:
+    """Defect 1: an unexpected programmer error must NOT become 503.
+
+    A repository that raises a programming error (not a SQLAlchemy dependency
+    failure) must surface as a generic 500 internal-error, never as the
+    'authoritative event store unavailable' 503.
+    """
+
+    class _BugsyEventRepo:
+        def max_seq(self) -> int:
+            raise KeyError("programmer bug, not a DB failure")
+
+    app = create_operator_app(
+        event_repository=_BugsyEventRepo(),  # type: ignore[arg-type]
+        entity_repository=SQLAlchemyEntityRepository(
+            session_manager=DatabaseSessionManager("sqlite:///:memory:")
+        ),
+        relation_repository=SQLAlchemyRelationRepository(
+            session_manager=DatabaseSessionManager("sqlite:///:memory:")
+        ),
+    )
+    # raise_app_exceptions=False so the app's generic 500 handler
+    # (ServerErrorMiddleware) can produce the response instead of re-raising
+    # the exception into the test transport.
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        response = await client.get(STREAM_URL)
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "internal operator error"
+    assert body["error_type"] == "InternalServerError"
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_ticks_zero_yields_snapshot_plus_one_tail_poll(app) -> None:
+    """Defect 4: pin the ``stream_ticks=0`` semantics unambiguously.
+
+    ``stream_ticks=0`` yields the initial snapshot plus exactly one tail poll
+    (plus one keepalive comment frame), then terminates — it never emits two
+    snapshot frames or an infinite stream.
+    """
+    for i in range(1, 4):
+        app.state.operator_service._events.save(_make_event(f"e{i}"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        async with client.stream(
+            "GET", f"{STREAM_URL}?stream_ticks=0"
+        ) as response:
+            body = b"".join(
+                [chunk async for chunk in response.aiter_bytes()]
+            )
+    # Snapshot delivers e1..e3 exactly once (no duplicate frames).
+    frames = _parse_frames(body)
+    assert [f[0] for f in frames] == [1, 2, 3]
+
+
+# -- Defect 5: race-boundary coverage (bounded-batch cursor semantics) --------
+
+
+def _make_service(event_repo: SQLAlchemyEventRepository) -> OperatorService:
+    return OperatorService(
+        event_repository=event_repo,
+        entity_repository=SQLAlchemyEntityRepository(
+            session_manager=event_repo.session_manager
+        ),
+        relation_repository=SQLAlchemyRelationRepository(
+            session_manager=event_repo.session_manager
+        ),
+    )
+
+
+def test_race_case_a_event_committed_after_snapshot_is_delivered(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """Case A: snapshot captured through seq N; event N+1 committed; first tail
+    must deliver N+1."""
+    for i in range(1, 4):
+        event_repo.save(_make_event(f"e{i}"))  # snapshot through seq 3
+    service = _make_service(event_repo)
+    snapshot = service.events_after_seq_bounded(0, limit=50)  # seq 1..3
+    assert [s["seq"] for s in snapshot] == [1, 2, 3]
+    # Event N+1 (seq 4) committed after the snapshot was captured.
+    event_repo.save(_make_event("e4"))
+    tail = service.events_after_seq_bounded(3, limit=200)
+    assert [t["seq"] for t in tail] == [4]
+    assert tail[0]["event"]["event_id"] == "e4"
+
+
+def test_race_case_b_snapshot_event_not_duplicated_in_tail(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """Case B: snapshot contains N; cursor = N; first tail must NOT re-deliver N."""
+    for i in range(1, 4):
+        event_repo.save(_make_event(f"e{i}"))  # N = 3
+    service = _make_service(event_repo)
+    snapshot = service.events_after_seq_bounded(0, limit=50)
+    assert [s["seq"] for s in snapshot] == [1, 2, 3]
+    # Tail reads strictly after cursor N=3 -> no duplicate of seq 3.
+    tail = service.events_after_seq_bounded(3, limit=200)
+    assert tail == []
+
+
+def test_race_case_c_multiple_events_before_first_tail_delivered_in_order(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """Case C: events N+1,N+2,N+3 committed before first tail -> all delivered in
+    seq order via bounded batches."""
+    for i in range(1, 4):
+        event_repo.save(_make_event(f"e{i}"))  # snapshot through seq 3
+    service = _make_service(event_repo)
+    service.events_after_seq_bounded(0, limit=50)
+    # N+1, N+2, N+3 committed before first tail read.
+    for i in range(4, 7):
+        event_repo.save(_make_event(f"e{i}"))
+    tail = service.events_after_seq_bounded(3, limit=200)
+    assert [t["seq"] for t in tail] == [4, 5, 6]
+    assert [t["event"]["event_id"] for t in tail] == ["e4", "e5", "e6"]
+
+
+def test_race_case_d_last_event_id_then_new_event(
+    event_repo: SQLAlchemyEventRepository,
+) -> None:
+    """Case D: Last-Event-ID = N; new event N+1 -> deliver N+1 only."""
+    for i in range(1, 4):
+        event_repo.save(_make_event(f"e{i}"))  # N = 3
+    service = _make_service(event_repo)
+    event_repo.save(_make_event("e4"))  # N+1 committed
+    tail = service.events_after_seq_bounded(3, limit=200)
+    assert [t["seq"] for t in tail] == [4]
+    assert tail[0]["event"]["event_id"] == "e4"
+
+
+def test_bounded_batch_respects_limit(event_repo: SQLAlchemyEventRepository) -> None:
+    """Defect 3: the bounded tail batch never returns more than ``limit`` events."""
+    for i in range(1, 6):
+        event_repo.save(_make_event(f"e{i}"))
+    service = _make_service(event_repo)
+    batch = service.events_after_seq_bounded(0, limit=2)
+    assert [b["seq"] for b in batch] == [1, 2]  # DB-bounded to 2, not 5
+
+
 # -- service layer primitives ------------------------------------------------
 
 
@@ -353,8 +505,6 @@ def test_service_events_after_seq_ordering(
 ) -> None:
     for i in range(1, 4):
         event_repo.save(_make_event(f"e{i}"))
-    from app.operator.service import OperatorService
-
     service = OperatorService(
         event_repository=event_repo,
         entity_repository=SQLAlchemyEntityRepository(
