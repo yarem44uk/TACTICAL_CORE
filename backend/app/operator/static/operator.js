@@ -6,6 +6,56 @@
 
 var API = "/api/v1/operator";
 
+/* ---- operator auth (WO-037-05) ------------------------------------------- */
+/* The operator token is held in memory for the page session only. It is never
+   written to localStorage/sessionStorage, never placed in a URL, and never
+   logged. The password input is cleared immediately after Apply. */
+
+var authToken = null;
+
+function getAuthHeaders() {
+  return authToken ? { "Authorization": "Bearer " + authToken } : {};
+}
+
+function withAuth(opts) {
+  opts = opts || {};
+  var headers = getAuthHeaders();
+  if (opts.headers) {
+    headers = Object.assign({}, opts.headers, headers);
+  }
+  opts.headers = headers;
+  return opts;
+}
+
+function isAuthFailure(status) {
+  return status === 401;
+}
+
+function showAuthRequired() {
+  el("footer-status").textContent = "Authentication required — enter operator token";
+}
+
+function applyToken() {
+  var t = el("token-input").value.trim();
+  authToken = t || null;
+  el("token-input").value = ""; // never leave the token visible in the DOM
+  el("auth-btn").hidden = !!authToken;
+  el("logout-btn").hidden = !authToken;
+  el("footer-status").textContent = authToken
+    ? "Authenticated — operator UI connected"
+    : "No token — operator requests unauthenticated";
+  loadHealth();
+  switchView(el("view-events").classList.contains("active") ? "events" : "entities");
+}
+
+function logout() {
+  authToken = null;
+  el("auth-btn").hidden = false;
+  el("logout-btn").hidden = true;
+  el("footer-status").textContent = "Logged out — enter operator token";
+  el("health-content").innerHTML = '<div class="detail-msg">Enter operator token to connect.</div>';
+}
+
 /* ---- shared helpers ------------------------------------------------------ */
 
 function el(id) { return document.getElementById(id); }
@@ -34,12 +84,13 @@ function escapeHtml(s) {
 /* ---- health -------------------------------------------------------------- */
 
 function loadHealth() {
-  fetch(API + "/health", { method: "GET" })
+  fetch(API + "/health", withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
       var box = el("health-content");
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       var s = out.data;
       if (out.status !== 200) {
         box.innerHTML =
@@ -96,12 +147,13 @@ function loadEvents() {
   if (to) params.push("to_time=" + encodeURIComponent(to));
   params.push("limit=50");
   if (evState.cursor !== null) params.push("cursor=" + evState.cursor);
-  fetch(API + "/events?" + params.join("&"), { method: "GET" })
+  fetch(API + "/events?" + params.join("&"), withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
       var feed = el("event-feed");
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       if (out.status !== 200) {
         evState.hasNext = false;
         evState.hasPrev = false;
@@ -139,12 +191,13 @@ function updateEventPager() {
 }
 
 function openEventDetail(eventId) {
-  fetch(API + "/events/" + encodeURIComponent(eventId), { method: "GET" })
+  fetch(API + "/events/" + encodeURIComponent(eventId), withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
       el("detail-title").textContent = "Event " + eventId;
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       if (out.status === 404) {
         el("detail-body").innerHTML = '<div class="detail-msg err">Not found: event does not exist</div>';
       } else if (out.status !== 200) {
@@ -179,12 +232,13 @@ function loadEntities() {
   var params = [];
   var type = el("en-type").value.trim();
   if (type) params.push("entity_type=" + encodeURIComponent(type));
-  fetch(API + "/entities" + (params.length ? "?" + params.join("&") : ""), { method: "GET" })
+  fetch(API + "/entities" + (params.length ? "?" + params.join("&") : ""), withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
       var list = el("entity-list");
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       if (out.status !== 200) {
         showError(list, out.status, out.data.detail);
         return;
@@ -207,11 +261,12 @@ function loadEntities() {
 }
 
 function openEntityDetail(entityId) {
-  fetch(API + "/entities/" + encodeURIComponent(entityId), { method: "GET" })
+  fetch(API + "/entities/" + encodeURIComponent(entityId), withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       if (out.status === 404) {
         el("detail-title").textContent = "Entity " + entityId;
         el("detail-body").innerHTML = '<div class="detail-msg err">Not found: entity does not exist</div>';
@@ -253,13 +308,14 @@ function openEntityDetail(entityId) {
 }
 
 function loadRelations(entityId, etype, status, version, createdAt, updatedAt) {
-  fetch(API + "/entities/" + encodeURIComponent(entityId) + "/relations", { method: "GET" })
+  fetch(API + "/entities/" + encodeURIComponent(entityId) + "/relations", withAuth({ method: "GET" }))
     .then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data }; });
     })
     .then(function (out) {
       var box = el("entity-relations");
       if (!box) return;
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
       if (out.status !== 200) {
         box.innerHTML = '<div class="detail-msg err">Error (HTTP ' + out.status + ")</div>";
         return;
@@ -307,6 +363,11 @@ function switchView(name) {
 }
 
 function wire() {
+  el("auth-btn").addEventListener("click", applyToken);
+  el("logout-btn").addEventListener("click", logout);
+  el("token-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { applyToken(); }
+  });
   el("tab-events").addEventListener("click", function () { switchView("events"); });
   el("tab-entities").addEventListener("click", function () { switchView("entities"); });
   el("refresh-btn").addEventListener("click", function () {

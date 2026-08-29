@@ -36,6 +36,11 @@ from app.entity_repository.sqlalchemy_entity_repository import (
 from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
+from app.operator.auth import (
+    OperatorAuthGate,
+    OperatorAuthMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.operator.router import router
 from app.operator.service import (
     InvalidRequestError,
@@ -70,6 +75,7 @@ def create_operator_app(
     event_repository: Optional[SQLAlchemyEventRepository] = None,
     entity_repository: Optional[SQLAlchemyEntityRepository] = None,
     relation_repository: Optional[SQLAlchemyRelationRepository] = None,
+    auth_gate: Optional[OperatorAuthGate] = None,
     title: str = "Tactical Core Operator API",
     version: str = "1.0.0",
 ) -> FastAPI:
@@ -79,6 +85,9 @@ def create_operator_app(
         event_repository: optional injected authoritative event repository.
         entity_repository: optional injected authoritative entity repository.
         relation_repository: optional injected authoritative relation repository.
+        auth_gate: optional operator auth gate (WO-037-05). Defaults to a gate
+            built from the ``OPERATOR_TOKEN`` environment variable. When no
+            token is configured the gate is disabled (local dev / tests).
         title: application title (OpenAPI).
         version: application version (OpenAPI).
 
@@ -106,6 +115,17 @@ def create_operator_app(
     app = FastAPI(title=title, version=version)
     app.state.operator_service = service
     app.include_router(router)
+
+    # -- operator auth / access control (WO-037-05) ---------------------------
+    # Security headers are added innermost; the auth gate is outermost so that
+    # an unauthenticated request is rejected before any route/static handling
+    # runs. Both are pure-ASGI and preserve SSE streaming.
+    app.add_middleware(SecurityHeadersMiddleware)
+    if auth_gate is None:
+        from app.operator.auth import build_operator_auth_gate
+
+        auth_gate = build_operator_auth_gate()
+    app.add_middleware(OperatorAuthMiddleware, gate=auth_gate)
 
     # -- offline operator UI (WO-037-03) ------------------------------------
     # Served ONLY by this operator process (ADR-011 §13). Self-contained

@@ -10,6 +10,11 @@
   <header class="app-header">
     <h1 class="app-title">Tactical Core</h1>
     <span class="app-subtitle">Offline Operator UI</span>
+    <div class="auth-bar">
+      <input id="token-input" class="input auth-input" type="password" placeholder="Operator token" autocomplete="off" spellcheck="false" />
+      <button id="auth-btn" class="btn auth-btn" type="button">Apply</button>
+      <button id="logout-btn" class="btn auth-btn" type="button" hidden>Logout</button>
+    </div>
     <button id="refresh-btn" class="btn" type="button">Refresh</button>
   </header>
 

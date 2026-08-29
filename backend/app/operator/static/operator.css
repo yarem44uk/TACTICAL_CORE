@@ -182,3 +182,20 @@ pre.json { background: var(--panel-2); padding: 12px; border-radius: 6px; overfl
   border-top: 1px solid var(--border);
   margin-top: 16px;
 }
+
+
+/* WO-037-05 — operator auth bar (new classes only; existing style unchanged) */
+.auth-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  margin-right: 10px;
+}
+.auth-input {
+  width: 200px;
+  font-family: inherit;
+}
+.auth-btn {
+  white-space: nowrap;
+}
