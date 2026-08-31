@@ -1,7 +1,7 @@
 # ADR-012 — Operational Classification and Severity Model
 
 ## Status
-Proposed
+Accepted
 
 ## Context
 
@@ -227,6 +227,6 @@ The following are intentionally left as separate follow-up decisions (NOT decide
 
 ## Acceptance / Governance Notes
 
-- ADR-012 is a **Proposed** architecture decision establishing the conceptual model only.
+- ADR-012 is an **Accepted** architecture decision establishing the conceptual model only. Its status is **Accepted**; it remains the governing architecture for the severity/classification model.
 - It authorizes no implementation, no schema change, no new durable state, and no WO-037-06 scope.
 - Any subsequent implementation (e.g., operator severity filtering) requires its own Work Order and independent audit, and must comply with the immutability, authority, persistence, security, offline, and protected-core rules above.
