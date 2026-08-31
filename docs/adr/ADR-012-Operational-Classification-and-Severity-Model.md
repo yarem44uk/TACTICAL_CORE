@@ -197,7 +197,7 @@ Positive:
 - No schema change, no new durable state, no protected-core change, no new dependency, offline preserved.
 
 Negative / open:
-- Final severity taxonomy is not defined by this ADR (separate decision).
+- Final severity taxonomy is now ratified by follow-up AD-012.8 (base ADR-012 left it undecided).
 - Concrete baseline-classifier mapping rules and rule ownership are not defined (separate decision).
 - Operational assessment persistence/audit model is not defined (separate decision).
 - Operator filtering semantics are not yet specified (prospective WO-037-06 scope).
@@ -206,13 +206,86 @@ Negative / open:
 
 The following are intentionally left as separate follow-up decisions (NOT decided by ADR-012):
 
-1. Final severity taxonomy (values, ordering).
-2. Baseline classifier rule ownership.
-3. Classification-rule versioning.
-4. Operational assessment persistence model.
-5. Operational assessment lifecycle.
-6. Audit model (who/what/when/previous/new/reason) — mechanism, not whether audit is needed.
-7. Operator filtering semantics (prospective WO-037-06).
+1. Classification-rule versioning.
+2. Operational assessment persistence mechanism.
+3. Operational assessment lifecycle.
+4. Audit model (who/what/when/previous/new/reason) — mechanism, not whether audit is needed.
+5. Operator filtering semantics (prospective WO-037-06).
+6. Concrete source/event → severity mapping rules.
+
+## Accepted Follow-up Decisions
+
+The following four decisions extend the Accepted ADR-012 conceptual model. They are ratified by the Architect as **ACCEPTED** (AD-012.8, AD-012.9, AD-012.10, AD-012.11). They remain documentation/governance decisions only — they authorize no code, no schema change, and no new durable state.
+
+### AD-012.8 — Severity Taxonomy — ACCEPTED
+
+Adopt the following operational severity taxonomy:
+
+| Severity | Ordering | Semantic intent |
+| --- | --- | --- |
+| INFO | 1 | routine / negligible operational impact |
+| WARNING | 2 | meaningful deviation or emerging operational concern |
+| THREAT | 3 | direct or significant operational threat |
+| CRITICAL | 4 | critical impact to mission, force safety, or system survivability |
+
+Ordering: `INFO < WARNING < THREAT < CRITICAL`.
+
+These are architectural definitions, not source-specific mappings.
+
+### AD-012.9 — Baseline Classification — ACCEPTED
+
+Baseline classification is:
+
+- **deterministic**
+- **read-only**
+- **derived**
+- **replayable**
+- **computed on demand**
+
+It is derived from authoritative event facts. It does NOT modify:
+
+- event identity
+- event type
+- timestamp
+- source
+- payload
+- seq
+- `CanonicalEvent`
+- `DurableCanonicalEvent`
+
+### AD-012.10 — Classification Ownership — ACCEPTED
+
+Ownership is:
+
+- **SOURCE** — raw/vendor-specific facts only
+- **INGESTION NORMALIZATION** — normalize source-specific facts
+- **BASELINE CLASSIFIER** — deterministic operational classification
+- **OPERATOR / TRIAGE** — contextual Operational Assessment
+
+The Source is not authoritative for global system severity semantics. The Operator is not authoritative for canonical event semantics. No layer may silently redefine another layer's semantics.
+
+### AD-012.11 — Baseline Classification Persistence — ACCEPTED
+
+Baseline classification is **NOT DURABLY PERSISTED**. It is computed on demand. Therefore:
+
+- `CanonicalEvent.severity = NO`
+- `DurableCanonicalEvent.severity = NO`
+
+No new table, column, migration, checkpoint, event store, or classification store is authorized by these decisions. Operational Assessment remains separate, and its persistence remains a future decision.
+
+### Scope of the Four Decisions
+
+The four decisions above DO NOT authorize:
+
+- automatic event_type → severity mappings
+- source-specific severity mappings
+- AI classification
+- operator assessment persistence
+- database schema changes
+- canonical Event changes
+- DurableCanonicalEvent changes
+
+Those remain separate decisions.
 
 ## Non-Goals
 
@@ -221,7 +294,7 @@ The following are intentionally left as separate follow-up decisions (NOT decide
 - No new durable state (tables/columns/checkpoints).
 - No implementation of a baseline classifier in this ADR.
 - No implementation of operational assessment storage.
-- No concrete severity taxonomy in this ADR.
+- No concrete severity taxonomy in the base ADR-012 decision (the taxonomy is defined separately by follow-up AD-012.8).
 - No change to the protected core.
 - No new external dependency, no cloud/IdP/telemetry dependency.
 
