@@ -279,13 +279,16 @@ def test_h_noise_configured_threshold_no_recording(archive) -> None:
 
 
 def test_h_noise_adaptive_no_endless_recording(archive) -> None:
-    # Adaptive VAD: constant high energy converges to non-speech (floor rises).
+    # Adaptive VAD: low-amplitude background noise (below the adaptive speech
+    # threshold) must never start a recording.  The adaptive floor tracks
+    # non-speech frames only (W-039-B corrective), so steady noise stays
+    # non-speech and does not create endless recordings.
     rec, captured = _mkrecorder(archive, vad_adaptive=True)
-    _feed(rec, [15000] * 200, datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc))
+    _feed(rec, [200] * 200, datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc))
     assert rec.snapshot()["segments_completed"] == 0
     assert captured == []
-    # The adaptive noise floor should have risen close to the noise energy.
-    assert rec.snapshot()["vad_noise_floor"] > 10000
+    # The adaptive noise floor stays low, tracking the non-speech noise level.
+    assert rec.snapshot()["vad_noise_floor"] <= 250
 
 
 # ---------------------------------------------------------------------------
@@ -462,12 +465,52 @@ def test_vad_energy_and_detect() -> None:
     assert vad.name == "energy-rms-adaptive"
 
 
-def test_vad_adaptive_noise_floor_rises() -> None:
+def test_vad_adaptive_noise_floor_tracks_non_speech_only() -> None:
     vad = EnergyVad(VadConfig(adaptive=True, noise_percentile=20.0))
+    # Low background noise (below the adaptive speech threshold) is non-speech
+    # and is tracked by the adaptive noise floor, so it stays non-speech.
     for _ in range(100):
-        vad.detect(_pcm(15000))
-    assert vad.noise_floor > 10000
-    assert vad.detect(_pcm(15000)) is False
+        assert vad.detect(_pcm(200)) is False
+    assert vad.noise_floor <= 250
+    # Speech frames must NOT teach the noise floor to rise (W-039-B corrective):
+    # sustained speech stays speech, and the floor is not chased upward.
+    floor_before = vad.noise_floor
+    for _ in range(100):
+        assert vad.detect(_pcm(5000)) is True
+    assert vad.noise_floor == floor_before
+
+
+def test_vad_adaptive_sustained_speech_stays_speech() -> None:
+    # W-039-B corrective regression: sustained speech must not teach the adaptive
+    # noise floor to rise until the speech itself is classified as silence.
+    # This fails on the original implementation (only ~2 of 120 frames detected).
+    vad = EnergyVad(VadConfig(adaptive=True, noise_percentile=20.0))
+    for i in range(150):
+        assert vad.detect(_pcm(5000)) is True, f"frame {i} misclassified as silence"
+    # The noise floor must not have chased the speech energy.
+    assert vad.noise_floor < 5000
+
+
+def test_adaptive_sustained_speech_not_truncated(archive) -> None:
+    # W-039-B corrective regression at the recorder level: a sustained speech
+    # transmission must not be truncated by adaptive threshold runaway.  Uses the
+    # DEFAULT adaptive configuration (vad_adaptive=True, no fixed threshold).
+    rec, captured = _mkrecorder(archive, vad_adaptive=True)
+    t0 = datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc)
+    _feed(rec, [SILENCE] * 25, t0)  # 500 ms pre-roll background
+    _feed(rec, [SPEECH] * 150, t0 + timedelta(seconds=0.5))  # 3000 ms speech
+    _feed(rec, [SILENCE] * 60, t0 + timedelta(seconds=3.5))  # 1200 ms tail
+    assert rec.snapshot()["segments_completed"] == 1
+    assert len(captured) == 1
+    wav = captured[0]["recording"]["wav_path"]
+    _, _, _, samples = _read_wav(wav)
+    # The sustained speech itself must not be truncated: the high-amplitude
+    # region must span the full ~3 s speech interval.
+    high_ms = sum(1 for s in samples if abs(s) > 10000) / SAMPLE_RATE * 1000.0
+    assert high_ms >= 2900, f"speech truncated: only {high_ms:.0f} ms high-amplitude"
+    # Duration consistent with pre-roll + 3 s speech + post-roll/silence timeout.
+    duration_ms = captured[0]["recording"]["duration_ms"]
+    assert duration_ms >= 4000
 
 
 # ---------------------------------------------------------------------------

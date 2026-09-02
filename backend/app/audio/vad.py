@@ -132,22 +132,34 @@ class EnergyVad(IVAD):
         """Return ``True`` when ``audio_data`` is classified as speech.
 
         In adaptive mode the noise floor is refreshed from the low percentile of
-        the recent energy window, so sustained constant noise converges to
-        non-speech while a speech burst is detected.
+        the recent *non-speech* energy window, so sustained constant noise
+        converges to non-speech while a speech burst is detected.
+
+        Invariant (W-039-B corrective): frames that are confidently classified
+        as speech are never fed back into the noise-floor estimator.  Otherwise
+        a continuously active speech signal would drive the noise floor upward
+        until the speech itself was classified as silence and a transmission
+        would be truncated.
         """
         if not self.is_enabled:
             return False
         energy = self.get_energy_level(audio_data)
-        if self._config.adaptive:
+        # Classify against the current threshold BEFORE updating the noise
+        # floor, so a frame never influences the threshold that classifies it.
+        threshold = self._compute_threshold()
+        is_speech = energy >= threshold
+        self._last_threshold = threshold
+        self._is_speech = is_speech
+        # ONLY non-speech frames teach the adaptive noise floor.  Speech frames
+        # must never raise the floor, or sustained speech would be classified as
+        # silence (adaptive threshold runaway).
+        if self._config.adaptive and not is_speech:
             self._history.append(energy)
             if len(self._history) >= 3:
                 self._noise_floor = _percentile(
                     list(self._history), self._config.noise_percentile
                 )
-        threshold = self._compute_threshold()
-        self._last_threshold = threshold
-        self._is_speech = energy >= threshold
-        return self._is_speech
+        return is_speech
 
     # -- observability ------------------------------------------------------
 
