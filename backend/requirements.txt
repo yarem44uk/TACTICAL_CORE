@@ -18,3 +18,9 @@ httpx>=0.24.0
 fastapi>=0.141.0,<0.142
 uvicorn>=0.52.0,<0.53
 
+# Runtime — Durable repositories, projection, and observation engine (WO-037-08)
+# SQLAlchemy 2.0 ORM (Mapped/mapped_column/Session). Declared explicitly; the
+# CI regression step runs with PYTHONPATH=backend and imports these modules at
+# collection time. Pinned to the installed 2.0.x line.
+sqlalchemy>=2.0.0,<2.1
+
