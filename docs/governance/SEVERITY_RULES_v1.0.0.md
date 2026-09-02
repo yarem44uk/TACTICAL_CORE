@@ -46,7 +46,7 @@ ratified executable rules in section 3. No other level is admissible.
 
 The following rules are ratified for consumption. They are executable in the
 sense that they are fully determined by the event facts named in their
-conditions. They are not yet implemented.
+conditions.
 
 ### CAND-002
 
@@ -65,7 +65,7 @@ OUTPUT_SEVERITY = WARNING
 STATUS = RATIFIED
 ```
 
-### CAND-004 (Ratified With Limitation)
+### CAND-004
 
 ```
 RULE_ID = CAND-004
@@ -82,13 +82,7 @@ STATUS = RATIFIED_WITH_LIMITATION
 
 **Mandatory limitation (must not be removed or weakened):**
 
-> Payload content is not classified by the baseline classifier.
->
-> The rule does not claim that the contents of a verified observation
-> are themselves non-threatening.
->
-> Content-based threat/criticality analysis is outside the baseline
-> event classification mechanism.
+> Payload content is not classified by the baseline classifier. A verified observation being INFO does not mean its content is non-threatening. Content-based threat/criticality analysis is outside the baseline event classification mechanism.
 
 ### CAND-005
 
@@ -126,11 +120,9 @@ STATUS = RATIFIED
 
 The limitation on CAND-004 is authoritative and is restated here for emphasis:
 
-- The baseline classifier does **not** classify payload content.
-- A verified observation being classified `INFO` does **not** mean its content
-  is non-threatening.
-- Content-based threat/criticality analysis is **outside** the baseline event
-  classification mechanism.
+**Mandatory limitation (must not be removed or weakened):**
+
+> Payload content is not classified by the baseline classifier. A verified observation being INFO does not mean its content is non-threatening. Content-based threat/criticality analysis is outside the baseline event classification mechanism.
 
 ---
 
@@ -142,32 +134,28 @@ preserved here as record. They are not part of the ratified executable set.
 ### CAND-001
 
 ```
-system.error
+CAND-001
 +
-explicit critical operational impact
--> CRITICAL
+explicit conditional discriminator
+-> severity
 ```
 
 Status: **NOT_EXECUTABLE**
 
-Reason: The current event model contains no deterministic fact establishing
-operational criticality. The event type name `system.error` MUST NOT itself be
-interpreted as CRITICAL.
+Reason: The current event model contains no deterministic fact establishing operational criticality. The event type name system.error MUST NOT itself be interpreted as CRITICAL.
 
 ### CAND-003
 
 ```
-observation.retracted
+CAND-003
 +
-material operational correction
--> WARNING
+explicit conditional discriminator
+-> severity
 ```
 
 Status: **NOT_EXECUTABLE**
 
-Reason: The current event model contains no deterministic discriminator
-establishing material operational correction. The event type name
-`observation.retracted` MUST NOT itself be interpreted as WARNING.
+Reason: The current event model contains no deterministic discriminator establishing material operational correction. The event type name observation.retracted MUST NOT itself be interpreted as WARNING.
 
 ---
 
@@ -262,8 +250,8 @@ LIFECYCLE_OWNER = Domain Owner
 LIFECYCLE_APPROVER = Architecture Governance
 ```
 
-The current ruleset status is `RATIFIED_FOR_CONSUMPTION`. Creating this document
-does **not** mark the ruleset `ACTIVE` at runtime.
+The current ruleset status is `RATIFIED_FOR_CONSUMPTION`. Generating this
+document does **not** mark the ruleset `ACTIVE` at runtime.
 
 ---
 
@@ -355,15 +343,15 @@ DurableCanonicalEvent
 ```
 RULESET_PERSISTED = YES
 
-CLASSIFIER_IMPLEMENTED = NO
+CLASSIFIER_IMPLEMENTED = YES
 
-OPERATOR_SEVERITY_FILTER_IMPLEMENTED = NO
+OPERATOR_SEVERITY_FILTER_IMPLEMENTED = YES
 
 SCHEMA_CHANGED = NO
 
 DATABASE_CHANGED = NO
 
-WO03706_IMPLEMENTATION_AUTHORIZED = NO
+WO03707_IMPLEMENTATION_AUTHORIZED = YES
 ```
 
 ---
@@ -372,7 +360,9 @@ WO03706_IMPLEMENTATION_AUTHORIZED = NO
 
 - This ruleset is a documentation/governance artifact.
 - It is `RATIFIED_FOR_CONSUMPTION`, not `ACTIVE` at runtime.
-- Classifier implementation, operator severity filtering, schema changes, and
-  database changes are all explicitly out of scope and not authorized here.
-- Any implementation requires a separate Work Order and independent audit,
-  consistent with ADR-012 and its accepted follow-up decisions AD-012.8–12.11.
+- The classifier is implemented as a consumer-side, computed-on-demand,
+  read-only mechanism (ADR-012). The machine-readable TOML is the single
+  rule-content source; the Markdown is a generated representation.
+- Any future rule change requires a new ruleset version, domain approval,
+  architecture governance, replay revalidation, and newly generated Markdown,
+  consistent with ADR-012 and ADR-013.

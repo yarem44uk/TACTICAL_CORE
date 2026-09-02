@@ -1,0 +1,57 @@
+# TACTICAL CORE — Ratified Baseline Severity Ruleset v1.0.0
+#
+# This is the authoritative machine-readable ruleset. It is the SINGLE
+# source of approved rule content (ADR-013). The Baseline Classifier loads
+# and validates this artifact at initialization; the generated Markdown
+# (SEVERITY_RULES_v1.0.0.md) is a mechanical representation of this file.
+#
+# Governed by ADR-012 (Accepted). Replayable, offline, read-only, fail-closed.
+#
+# Structural contract (validated by the loader):
+#   [ruleset]          — version / status / governing_adr (all required)
+#   [[rules]]          — executable rules (required; non-empty)
+#   [[non_executable]] — record-only candidates (never loaded as executable)
+
+[ruleset]
+version = "SEVERITY-RULES-v1.0.0"
+status = "RATIFIED_FOR_CONSUMPTION"
+governing_adr = "ADR-012"
+
+[[rules]]
+rule_id = "CAND-002"
+event_type = "signal.failed"
+source = "signal"
+severity = "WARNING"
+status = "RATIFIED"
+
+[[rules]]
+rule_id = "CAND-004"
+event_type = "observation.verified"
+source = "*"
+severity = "INFO"
+status = "RATIFIED_WITH_LIMITATION"
+limitation = "Payload content is not classified by the baseline classifier. A verified observation being INFO does not mean its content is non-threatening. Content-based threat/criticality analysis is outside the baseline event classification mechanism."
+
+[[rules]]
+rule_id = "CAND-005"
+event_type = "relation.severed"
+source = "*"
+severity = "INFO"
+status = "RATIFIED"
+
+[[rules]]
+rule_id = "CAND-006"
+event_type = "system.startup"
+source = "*"
+severity = "INFO"
+status = "RATIFIED"
+
+[[non_executable]]
+rule_id = "CAND-001"
+status = "NOT_EXECUTABLE"
+reason = "The current event model contains no deterministic fact establishing operational criticality. The event type name system.error MUST NOT itself be interpreted as CRITICAL."
+
+[[non_executable]]
+rule_id = "CAND-003"
+status = "NOT_EXECUTABLE"
+reason = "The current event model contains no deterministic discriminator establishing material operational correction. The event type name observation.retracted MUST NOT itself be interpreted as WARNING."
