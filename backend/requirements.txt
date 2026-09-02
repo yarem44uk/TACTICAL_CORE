@@ -23,4 +23,8 @@ uvicorn>=0.52.0,<0.53
 # CI regression step runs with PYTHONPATH=backend and imports these modules at
 # collection time. Pinned to the installed 2.0.x line.
 sqlalchemy>=2.0.0,<2.1
+# Alembic migrations (backend/app/database/migration.py imports alembic.command).
+# Required at import time by the durable engine's session/migration module, which
+# the CI regression step imports. Pinned to the installed 1.18.x line.
+alembic>=1.18.0,<1.19
 
