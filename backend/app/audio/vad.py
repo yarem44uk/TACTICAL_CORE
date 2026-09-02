@@ -9,10 +9,14 @@ radio signal (PCM S16LE, 8 kHz, mono):
 
 Threshold modes (W-039-B §6/§13):
   * ``adaptive`` (default) — the noise floor is tracked as the low percentile of
-    a bounded sliding window of recent frame energies.  Sustained constant noise
-    (hiss/static/carrier) drives the floor up so the noise is classified as
-    non-speech and does not create endless recordings, while a burst of speech
-    (energy well above the floor) is detected.
+    a bounded sliding window of recent frame energies.  Frames confidently
+    classified as speech never feed the noise floor (so a speech burst cannot
+    chase the floor upward until the speech is truncated), while a *prolonged
+    stable constant-energy* signal (hiss/static/carrier) is eventually
+    re-classified as background by the stability/persistence tracker and then
+    absorbed into the floor — so sustained non-voice noise does not create an
+    endless recording.  A burst of speech (energy well above the floor, and
+    amplitude-modulated) is detected.
   * ``fixed_threshold`` — an absolute threshold in RMS units.  Used by the
     deterministic segmentation tests (W-039-B §14) so a long loud tone is
     stably classified as speech without the adaptive floor chasing it.
@@ -105,10 +109,32 @@ class EnergyVad(IVAD):
         config: Optional :class:`VadConfig`.  Defaults to a full adaptive VAD.
     """
 
+    # W-039-B second corrective: a sustained constant-energy signal (carrier /
+    # static / tone) must eventually be treated as background and must not
+    # create an endless recording.  Speech is amplitude-modulated, so its
+    # energy varies frame-to-frame; a prolonged *stable* level is the
+    # fingerprint of a non-voice signal.  These parameters bound the
+    # stability/persistence tracker used to distinguish the two:
+    #   * _STABILITY_WINDOW       — frames of recent energy examined for spread;
+    #   * _STABILITY_TOLERANCE    — max relative (max-min)/mean spread to count
+    #                               as "stable" (constant);
+    #   * _STABLE_BACKGROUND_FRAMES — consecutive stable frames before the
+    #                               signal is deemed background, not speech.
+    # The speech burst is protected (first corrective: speech frames never feed
+    # the adaptive noise floor), but a *prolonged* stable level is eventually
+    # absorbed as background (second corrective).  The tracker resets whenever
+    # the energy varies, so a speech burst is never suppressed while it
+    # modulates.
+    _STABILITY_WINDOW = 8
+    _STABILITY_TOLERANCE = 0.15
+    _STABLE_BACKGROUND_FRAMES = 200
+
     def __init__(self, config: VadConfig | None = None) -> None:
         self._config = config or VadConfig()
         self._noise_floor = float(self._config.initial_noise_floor)
         self._history: deque[float] = deque(maxlen=self._config.history_frames)
+        self._recent: deque[float] = deque(maxlen=self._STABILITY_WINDOW)
+        self._stable_frames = 0
         self._last_energy = 0.0
         self._last_threshold = 0.0
         self._is_speech = False
@@ -140,6 +166,15 @@ class EnergyVad(IVAD):
         a continuously active speech signal would drive the noise floor upward
         until the speech itself was classified as silence and a transmission
         would be truncated.
+
+        Second corrective (W-039-B): a *sustained constant-energy* non-voice
+        signal (carrier / static / tone) must not remain speech forever, or it
+        creates an endless recording.  Such a signal is stable (its energy does
+        not vary), whereas speech is amplitude-modulated.  A sufficiently long,
+        sufficiently stable constant-energy signal is therefore re-classified
+        as background even though its amplitude is above the speech threshold.
+        Speech is protected from immediate noise-floor contamination, but a
+        prolonged stable level is eventually absorbed as background.
         """
         if not self.is_enabled:
             return False
@@ -149,6 +184,12 @@ class EnergyVad(IVAD):
         threshold = self._compute_threshold()
         is_speech = energy >= threshold
         self._last_threshold = threshold
+        # A sustained constant-energy signal is background, not speech.  This
+        # runs on every adaptive frame so a prolonged stable level eventually
+        # suppresses the endless-recording chain without special-casing any
+        # amplitude value (it is amplitude-independent).
+        if self._config.adaptive and self._is_stable_background(energy):
+            is_speech = False
         self._is_speech = is_speech
         # ONLY non-speech frames teach the adaptive noise floor.  Speech frames
         # must never raise the floor, or sustained speech would be classified as
@@ -184,6 +225,33 @@ class EnergyVad(IVAD):
         return self._is_speech
 
     # -- internals ----------------------------------------------------------
+
+    def _is_stable_background(self, energy: float) -> bool:
+        """Return ``True`` when a prolonged stable constant-energy signal is present.
+
+        W-039-B second corrective.  Tracks the relative spread ``(max-min)/mean``
+        of a bounded window of recent frame energies.  A *stable* (constant)
+        energy level sustained for ``_STABLE_BACKGROUND_FRAMES`` consecutive
+        frames is the fingerprint of a non-voice carrier / static / tone and is
+        treated as background, not speech.  The counter resets whenever the
+        energy varies (speech-like modulation), so a speech burst is never
+        suppressed while it modulates.  The window is bounded, so memory use is
+        constant.
+        """
+        self._recent.append(energy)
+        if len(self._recent) < self._STABILITY_WINDOW:
+            return False
+        lo = min(self._recent)
+        hi = max(self._recent)
+        mean = sum(self._recent) / len(self._recent)
+        if mean <= 0.0:
+            return False
+        spread = (hi - lo) / mean
+        if spread <= self._STABILITY_TOLERANCE:
+            self._stable_frames += 1
+        else:
+            self._stable_frames = 0
+        return self._stable_frames >= self._STABLE_BACKGROUND_FRAMES
 
     def _compute_threshold(self) -> float:
         """Compute the current speech threshold."""

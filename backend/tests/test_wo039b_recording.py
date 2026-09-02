@@ -513,6 +513,47 @@ def test_adaptive_sustained_speech_not_truncated(archive) -> None:
     assert duration_ms >= 4000
 
 
+def test_vad_adaptive_sustained_constant_noise_becomes_background() -> None:
+    # W-039-B second corrective regression: a sustained constant high-amplitude
+    # non-voice signal (carrier/static/tone) must eventually be treated as
+    # background, NOT remain speech forever.  This fails on the first corrective
+    # (169d5e7), where all frames were classified as speech (endless recording).
+    vad = EnergyVad(VadConfig(adaptive=True, noise_percentile=20.0))
+    speech_frames = 0
+    suppressed_at: int | None = None
+    for i in range(300):
+        is_speech = vad.detect(_pcm(15000))
+        if is_speech:
+            speech_frames += 1
+        elif suppressed_at is None:
+            suppressed_at = i
+    # The signal is initially above the adaptive threshold, but the adaptive VAD
+    # must eventually suppress it as background (not endless speech).
+    assert speech_frames >= 1
+    assert suppressed_at is not None
+    assert speech_frames < 300
+
+
+def test_adaptive_sustained_constant_noise_not_endless(archive) -> None:
+    # W-039-B second corrective regression at the recorder level: a sustained
+    # constant high-amplitude non-voice signal must eventually be treated as
+    # background and must NOT create an endless chain of recordings.
+    rec, captured = _mkrecorder(archive, vad_adaptive=True)
+    t0 = datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc)
+    # 8000 ms of a constant high-amplitude tone (carrier/static representation).
+    _feed(rec, [15000] * 400, t0)
+    snap = rec.snapshot()
+    # The adaptive VAD suppresses the sustained constant signal, so the
+    # transmission finalizes as a single recording instead of remaining an
+    # endless in-progress recording or chaining many segments.
+    assert snap["segments_completed"] == 1
+    assert len(captured) == 1
+    assert captured[0]["recording"]["finalize_reason"] == "silence_timeout"
+    # The recording must not span the whole fed interval (it was suppressed).
+    duration_ms = captured[0]["recording"]["duration_ms"]
+    assert duration_ms < 8000
+
+
 # ---------------------------------------------------------------------------
 # Unit-level: segmenter state machine
 # ---------------------------------------------------------------------------
