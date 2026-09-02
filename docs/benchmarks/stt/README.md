@@ -10,8 +10,11 @@ This directory holds the benchmark evidence for the real acoustic speech-to-text
 | --- | --- |
 | `run_benchmark.py` | Isolated, offline, stdlib-only benchmark harness. Probes candidate availability, builds the dataset manifest, executes a candidate over the manifest using a genuine COLD/WARM session lifecycle (measuring latency / RTF / CPU / RAM / GPU / VRAM, WER / CER / callsign accuracy, failures and timeouts), aggregates per-record results, and evaluates the ADR-014 mandatory gate. Does not register an engine, does not alter `SUPPORTED_ENGINES`, does not replace the deterministic test transcriber. |
 | `test_run_benchmark.py` | Benchmark-specific validation tests (offline, deterministic; use fake runners/sessions, never treated as real evidence). |
-| `dataset_manifest.csv` | The actual WAV masters discovered on the host, with format, SHA-256, provenance, ground-truth linkage, and a `real_transmission` marker. |
+| `dataset_manifest.csv` | The actual WAV masters discovered on the host, with format, SHA-256, provenance, ground-truth linkage, and a `real_transmission` marker. WO-041 regenerated this to the WO-041 schema; all 36 rows are WO-039 unit-test fixtures (`real_transmission=false`, empty ground truth). |
 | `results.csv` | Benchmark results in the per-record result model. Currently `NOT_EXECUTED` — see the report. |
+| `validate_dataset.py` | WO-041 offline dataset validator. Validates manifest integrity, real-transmission classification, ground-truth presence, SHA-256 uniqueness, WAV validity, and the >=50 real-transmission dataset gate. Engine-neutral, stdlib-only, read-only, no STT inference. |
+| `test_validate_dataset.py` | WO-041 dataset-validator validation tests (offline, deterministic, synthetic fixtures — never treated as real evidence). |
+| `STT-DATASET-REPORT.md` | WO-041 dataset report. Gate result: FAIL — 0 valid real transmissions. |
 | `STT-ENGINE-BENCHMARK-REPORT.md` | The evidence report. |
 
 ## How to run
