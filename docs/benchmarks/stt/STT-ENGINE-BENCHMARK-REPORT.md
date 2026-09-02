@@ -15,6 +15,32 @@
 
 ---
 
+## Tooling status vs. benchmark execution status
+
+It is important to distinguish two different things:
+
+**TOOLING STATUS** — the benchmark harness is implemented and validated. It
+is capable of executing the ADR-014 benchmark *when* a candidate runtime/model
+and a dataset of real radio recordings are provisioned locally. The harness
+measures latency, RTF, CPU, RAM, GPU, VRAM, WER, CER, callsign accuracy, and
+accounts for failures and timeouts per record. This status is **VALIDATED**
+(`docs/benchmarks/stt/test_run_benchmark.py` passes).
+
+**BENCHMARK EXECUTION STATUS** — the benchmark has **NOT** been executed,
+because the prerequisites are absent on this host (see §8/§9 and §25). This
+status is **NOT EXECUTED**.
+
+```text
+Benchmark execution status: NOT EXECUTED
+ADR-014 gate:               NOT SATISFIED
+```
+
+The fact that the tooling is correct must not be read as the benchmark being
+run, and it must not be read as the ADR-014 gate being satisfied. The two are
+independent.
+
+---
+
 ## 1. Objective
 
 Execute a reproducible real-world benchmark of the recognised STT candidates
@@ -305,9 +331,14 @@ NO PRODUCTION STT ENGINE AUTHORIZED
 ## Appendix — Verification evidence
 
 - STT regression suite (`backend/tests/test_wo039c_stt.py`): **47 passed**.
-- Benchmark-specific tests (`docs/benchmarks/stt/test_run_benchmark.py`): **13 passed**.
+- Benchmark-specific tests (`docs/benchmarks/stt/test_run_benchmark.py`): **31 passed**.
 - `dataset_manifest.csv`: **36 rows**, 36 distinct SHA-256, all format-compliant,
-  `ground_truth=""` for all.
+  `ground_truth=""` for all, `real_transmission="false"` for all (the fixtures
+  are not relabelled as real radio).
 - Candidate probe: both candidates `runtime_installed=false`, `model_present=false`.
+- Benchmark harness (WO-040-CORR): the per-record result model, candidate runner
+  boundary, latency/RTF/CPU/RAM/GPU/VRAM measurement, failure/timeout accounting,
+  aggregation, cold/warm support, results CSV (LF), and ADR-014 gate evaluation
+  are implemented and validated by the 31 benchmark-specific tests.
 - No production source, test, backlog, schema, or existing-ADR file was modified
-  (see the WO-040 mutation proof in the work-order report).
+  (see the WO-040-CORR mutation proof in the work-order report).

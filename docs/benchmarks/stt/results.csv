@@ -1,3 +1,3 @@
-engine,status,wer,cer,callsign_accuracy,e2e_latency_s,rtf,cpu_percent,ram_mb,gpu_percent,vram_mb,failures,timeouts,transmissions_evaluated,cold_start,warm_inference,notes
-faster_whisper,NOT_EXECUTED,,,,,,,,,,,,0,,,"Runtime not installed locally (ModuleNotFoundError: No module named 'faster_whisper'); no local model present. Offline requirement (WO-040 §8) not satisfiable."
-vosk,NOT_EXECUTED,,,,,,,,,,,,0,,,"Runtime not installed locally (ModuleNotFoundError: No module named 'vosk'); no local model present. Offline requirement (WO-040 §8) not satisfiable."
+candidate,audio_id,run_phase,status,audio_duration_seconds,reference,hypothesis,wer,cer,callsign_accuracy,callsigns_total,callsigns_correct,processing_time_seconds,latency_seconds,rtf,cpu_usage,ram_usage,gpu_usage,vram_usage,failure,timeout,error
+faster_whisper,,,NOT_EXECUTED,,,,,,,0,0,,,,,,N/A,N/A,false,false,Benchmark not executed: no real radio dataset and no local candidate runtime/model (WO-040-CORR §20).
+vosk,,,NOT_EXECUTED,,,,,,,0,0,,,,,,N/A,N/A,false,false,Benchmark not executed: no real radio dataset and no local candidate runtime/model (WO-040-CORR §20).
