@@ -198,21 +198,72 @@ class SttWorker:
         return self._language
 
     def start(self) -> None:
+        """Start (or restart) the worker.  Idempotent while a worker is live.
+
+        The decision to create a thread and the assignment of ``_thread`` happen
+        atomically under ``_lock``.  A live worker is NEVER replaced: only a
+        ``None`` or already-terminated ``_thread`` reference may be replaced
+        (a legitimate restart after a clean stop).  This is what enforces the
+        single-worker invariant when ``start()``/``stop()`` are invoked from
+        different threads concurrently.
+        """
         with self._lock:
-            if self._thread is not None:
+            # Idempotent: only a *live* worker blocks a new start.  A stale
+            # (already terminated) thread object is replaced so the worker can
+            # be restarted after a clean stop.
+            if self._thread is not None and self._thread.is_alive():
                 return
             self._stop.clear()
-            self._thread = threading.Thread(
+            thread = threading.Thread(
                 target=self._run, name="wo039c-stt-worker", daemon=True
             )
-            self._thread.start()
+            # Assign the reference BEFORE start() so a concurrent stop() can
+            # never observe a live worker that is not represented by ``_thread``.
+            self._thread = thread
+            thread.start()
 
-    def stop(self, timeout: float = 2.0) -> None:
+    def stop(self, timeout: float = 2.0) -> bool:
+        """Request the worker to stop and wait up to ``timeout`` for termination.
+
+        Lifecycle policy (deterministic, race-safe -- WO-039-C3 corrective 2):
+
+        * ``_stop`` is set first so the worker loop exits at the next boundary.
+        * The join is performed WITHOUT holding ``_lock`` (an indefinite join
+          must never block ``start()``/``submit()``).
+        * A live worker thread is NEVER forgotten: ``_thread`` is cleared only
+          once the referenced thread has actually terminated AND is still the
+          reference that a concurrent ``start()`` has not replaced.
+
+        Returns:
+            ``True``  -- the worker this call targeted has actually terminated
+            and no newer worker replaced it (``_thread`` is ``None``).
+            ``False`` -- the targeted worker is still alive after ``timeout``
+            (its reference is retained so a concurrent ``start()`` cannot spawn
+            a second worker), OR a concurrent ``start()`` replaced the reference
+            with a newer live worker.
+        """
         self._stop.set()
-        thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout)
-        self._thread = None
+        with self._lock:
+            thread = self._thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            # Cannot join ourselves; the worker loop exits on the stop event.
+            return not thread.is_alive()
+        thread.join(timeout=timeout)
+        with self._lock:
+            if thread is not self._thread:
+                # A concurrent start() replaced the reference with a newer
+                # worker; the thread we joined is gone.  Report not-stopped so
+                # callers do not assume the whole instance is stopped.
+                return False
+            if thread.is_alive():
+                # Timeout: the worker is still running.  Keep the reference so a
+                # concurrent start() cannot spawn a second worker (Policy A --
+                # report timeout/failure, retain the thread).
+                return False
+            self._thread = None
+            return True
 
     # -- submission ---------------------------------------------------------
 
