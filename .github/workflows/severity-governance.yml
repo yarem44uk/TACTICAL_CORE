@@ -1,0 +1,75 @@
+name: Severity Governance
+
+# WO-037-08 — Severity ruleset CI & release integrity enforcement.
+#
+# This workflow is a HARD GATE. It validates the authoritative severity
+# ruleset governance chain (ADR-013 / WO-037-08):
+#
+#   1. ruleset validity + generated-Markdown drift (existing validator);
+#   2. release integrity (frozen version/content identity, same-version
+#      mutation rejection) via the release ledger validator;
+#   3. runtime single-source rule boundary (no independent hardcoded
+#      semantic rule table) via the static AST detector;
+#   4. the WO-037-08 test suite (release immutability + single-source).
+#
+# Any non-zero result fails the workflow. There is NO continue-on-error and
+# NO warning-only step. The workflow NEVER regenerates/commits files and
+# NEVER mutates the repository from CI. It NEVER invokes an external
+# severity/rules service.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  severity-governance:
+    runs-on: ubuntu-latest
+    name: Severity ruleset governance gate
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install repository dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+
+      - name: Validate severity ruleset drift
+        run: |
+          set -euo pipefail
+          python scripts/validate_severity_drift.py
+
+      - name: Validate generated Markdown (regenerate-and-compare)
+        run: |
+          set -euo pipefail
+          python scripts/generate_severity_markdown.py --check
+
+      - name: Validate release integrity (release ledger + immutability)
+        run: |
+          set -euo pipefail
+          python scripts/validate_severity_release.py
+
+      - name: Validate runtime single-source rule boundary
+        run: |
+          set -euo pipefail
+          python scripts/check_severity_single_source.py
+
+      - name: Run WO-037-08 release-integrity tests
+        run: |
+          set -euo pipefail
+          python -m pytest -q backend/tests/test_wo037_08_severity_release_integrity.py
+
+      - name: Run WO-037-06 severity classifier regression
+        run: |
+          set -euo pipefail
+          python -m pytest -q backend/tests/test_wo037_06_severity_classifier.py

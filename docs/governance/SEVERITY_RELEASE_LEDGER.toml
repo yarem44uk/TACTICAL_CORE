@@ -1,0 +1,32 @@
+# TACTICAL CORE — Severity Ruleset Release Ledger
+#
+# This is the AUTHORITATIVE release history for the machine-readable severity
+# ruleset. It is NOT a regenerated checksum file. Each entry records a released
+# semantic version, the authoritative artifact content that was released, and
+# the release-integrity identity that binds them.
+#
+# Immutability contract (ADR-013 / WO-037-08):
+#   released semantic version
+#     + historically released artifact bytes
+#     + historical release commit
+#     = immutable release identity
+#
+# The sha256 values here are FROZEN release evidence. They are never
+# regenerated from the current working tree. The validator is read-only.
+#
+# A released version MUST NOT be silently changed while retaining the same
+# semantic version. Changed content requires a new semantic version, a new
+# authoritative artifact, a new SHA-256/content binding, and a new release
+# record.
+#
+# Governed by ADR-013 (Accepted).
+
+ledger_version = 1
+
+[[releases]]
+release_id = "SEVERITY-RULES-v1.0.0-r1"
+version = "SEVERITY-RULES-v1.0.0"
+artifact = "docs/governance/SEVERITY_RULES_v1.0.0.toml"
+sha256 = "84e702757d387051ae73c61becde6bdb193d9035c4ff6eb3fc101006e5e3b204"
+released_commit = "7ccea777b34ff1f9af363021efe313e21ef87184"
+governing_adr = "ADR-013"
