@@ -145,6 +145,11 @@ class SttWorker:
 
     Args:
         transcriber: The :class:`app.contracts.audio.ITranscriber` to run jobs on.
+            May be ``None`` (WO-041-CORR): when no authorized acoustic engine is
+            registered the worker is created in an explicit ``UNAVAILABLE``
+            (fail-closed) state.  ``submit()`` then rejects every job and records
+            an observable failure — it NEVER fabricates a transcript and never
+            falls back to ``DeterministicTestTranscriber``.
         source: The source name used for the derived transcript event.
         language: Default language hint (a job's ``language`` overrides it).
         engine: Optional engine identifier for the transcript payload.  When
@@ -158,7 +163,7 @@ class SttWorker:
 
     def __init__(
         self,
-        transcriber: ITranscriber,
+        transcriber: ITranscriber | None,
         *,
         source: str,
         language: str | None = None,
@@ -185,10 +190,33 @@ class SttWorker:
         self._failed = 0
         self._dropped = 0
         self._duplicates = 0
+        self._unavailable = 0
         self._inflight = 0
         self._errors: list[str] = []
         self._seen: set[str] = set()
         self._last_processed_recording_id: str | None = None
+
+    # -- production STT state ------------------------------------------------
+
+    @property
+    def available(self) -> bool:
+        """Whether an authorized acoustic engine is registered.
+
+        ``False`` when the worker was constructed with ``transcriber=None``
+        (WO-041-CORR fail-closed: no engine registered -> no fake transcript).
+        """
+        return self._transcriber is not None
+
+    @property
+    def state(self) -> str:
+        """Explicit production STT state.
+
+        Returns ``"AVAILABLE"`` when an engine is registered, otherwise
+        ``"UNAVAILABLE"`` (fail-closed).  A ``None``-transcriber worker is never
+        started and never processes a job.
+        """
+        return "AVAILABLE" if self.available else "UNAVAILABLE"
+
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -273,8 +301,24 @@ class SttWorker:
         The ``audio_recording_id`` is deduplicated deterministically: a second
         submission of the same recording is suppressed (WO-039-C3 §20).  When the
         queue is full the newest job is dropped; the WAV master is unaffected.
+
+        WO-041-CORR fail-closed: when no authorized acoustic engine is registered
+        (``transcriber is None``) every job is rejected and recorded as an
+        observable ``unavailable`` failure.  The WAV master is preserved and NO
+        fake transcript is ever produced.
         """
         with self._lock:
+            if self._transcriber is None:
+                self._unavailable += 1
+                self._errors.append(
+                    f"{job.audio_recording_id}: STT engine unavailable (fail closed)"
+                )
+                logger.warning(
+                    "WO-041-CORR STT fail-closed: no engine registered; "
+                    "rejecting job for %s",
+                    job.wav_path,
+                )
+                return False
             if job.audio_recording_id in self._seen:
                 self._duplicates += 1
                 logger.warning(
@@ -317,8 +361,10 @@ class SttWorker:
                 "failed": self._failed,
                 "dropped": self._dropped,
                 "duplicates": self._duplicates,
+                "unavailable": self._unavailable,
                 "errors": list(self._errors[-5:]),
                 "last_processed_recording_id": self._last_processed_recording_id,
+                "state": self.state,
             }
 
     # -- worker loop --------------------------------------------------------
@@ -357,7 +403,16 @@ class SttWorker:
         The WAV master is opened read-only and never written.  If the transcriber
         is not ready the job fails clearly (no silent fallback); the WAV is
         preserved.
+
+        WO-041-CORR: a ``None`` transcriber (no authorized engine) is a
+        fail-closed state.  It never reaches this path through ``submit()``, but
+        is guarded here so an unexpected direct call can never fabricate a
+        transcript.
         """
+        if self._transcriber is None:
+            raise SttWorkerError(
+                f"no STT engine registered; fail closed for {job.audio_recording_id}"
+            )
         if not self._transcriber.is_ready():
             raise SttWorkerError(
                 f"transcriber is not ready; refusing to transcribe {job.audio_recording_id}"

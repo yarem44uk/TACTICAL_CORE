@@ -35,8 +35,14 @@ from app.audio.orchestrator import segment_to_raw
 from app.audio.recorder import TransmissionRecorder
 from app.audio.recording_config import RecordingConfig
 from app.audio.rtp_receiver import RtpPcmFrame, RtpReceiver
+from app.audio.stt_config import SttConfig, SttConfigError
+from app.audio.stt_seam import (
+    SttEngineError,
+    SttEngineUnavailableError,
+    build_transcriber,
+)
 from app.audio.stt_worker import SttJob, SttWorker
-from app.audio.transcriber import DeterministicTestTranscriber
+from app.contracts.audio import ITranscriber
 from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
 from app.event_sources.config.source_definition import SourceDefinition
 
@@ -55,7 +61,11 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             multicast_port, codec, sample_rate, channels, source_name, ...).
         config: Optional explicit :class:`AudioConfig` (overrides the dict).
         decoder: Optional :class:`AudioDecoder`.
-        transcriber: Optional :class:`DeterministicTestTranscriber` (STT seam).
+        transcriber: Optional :class:`app.contracts.audio.ITranscriber`.  This is
+            the explicit WO-038 TCA1 (non-RTP) test/compatibility seam.  It is
+            NOT a production default: when omitted the adapter runs fail-closed
+            (no STT) rather than silently substituting
+            ``DeterministicTestTranscriber`` (WO-041-CORR F-01).
         callsign_detector: Optional :class:`CallsignDetector`.
     """
 
@@ -65,7 +75,7 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         *,
         config: AudioConfig | None = None,
         decoder: AudioDecoder | None = None,
-        transcriber: DeterministicTestTranscriber | None = None,
+        transcriber: ITranscriber | None = None,
         callsign_detector: CallsignDetector | None = None,
         recorder: TransmissionRecorder | None = None,
         stt_worker: SttWorker | None = None,
@@ -79,7 +89,11 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             sample_rate=self._config.sample_rate,
             channels=self._config.channels,
         )
-        self._transcriber = transcriber or DeterministicTestTranscriber()
+        # No production default transcriber (WO-041-CORR F-01): the TCA1
+        # (non-RTP) path only transcribes when an explicit transcriber is
+        # supplied.  An absent transcriber is fail-closed, never a
+        # DeterministicTestTranscriber fallback.
+        self._transcriber = transcriber
         self._callsign_detector = callsign_detector or CallsignDetector()
         self._queue: list[dict[str, Any]] = []
         self._queue_lock = threading.Lock()
@@ -95,17 +109,24 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
                     self._config, rec_cfg, on_recording=self._on_recording
                 )
 
-        # WO-039-C3: bounded WAV STT worker.  When a worker is supplied it is
-        # wired so a finalized recording is transcribed off the receiver thread
-        # and the derived transcript event flows through the same read_events()
-        # -> EventFactory -> EventPipeline path as the recording event.  It is
-        # only created/started when explicitly provided (or built from config),
-        # so the legacy per-RTP STT path is never reactivated here.
+        # WO-041-CORR F-03: the bounded WAV STT worker is the ONLY intended
+        # production transcription boundary.  A finalized WAV recording is the
+        # STT input; transcript events are derived from the WAV master, never
+        # from individual RTP packets.  When a worker is not supplied explicitly
+        # it is built from the source STT configuration; a source with STT
+        # disabled yields no worker, and STT enabled with no authorized engine
+        # yields a fail-closed (UNAVAILABLE) worker.  It is only started when an
+        # engine is actually registered (``available``).
         self._stt_worker = stt_worker
+        if self._stt_worker is None:
+            self._stt_worker = _build_production_stt_worker(
+                definition, self._config
+            )
         if self._stt_worker is not None:
             # Route transcript events into the adapter's read_events() queue.
             self._stt_worker.on_transcript = self._on_transcript
-            self._stt_worker.start()
+            if self._stt_worker.available:
+                self._stt_worker.start()
 
         logger.info(
             "MulticastAudioSourceAdapter '%s' configured "
@@ -127,6 +148,19 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
     def adapter_type(self) -> str:
         """Adapter type identifier used for registration."""
         return MULTICAST_AUDIO_ADAPTER_TYPE
+
+    @property
+    def stt_state(self) -> str:
+        """Explicit production STT state (WO-041-CORR).
+
+        Returns ``"DISABLED"`` when STT is disabled for the source (no worker),
+        ``"UNAVAILABLE"`` when STT is enabled but no authorized acoustic engine is
+        registered (fail-closed, no fake transcript), and ``"AVAILABLE"`` when an
+        engine is registered.
+        """
+        if self._stt_worker is None:
+            return "DISABLED"
+        return self._stt_worker.state
 
     # -- interface: read path -----------------------------------------------
 
@@ -198,8 +232,20 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
     def _on_segment(self, segment: AudioSegment) -> None:
         """Receiver hook: decode/STT/callsign one segment and queue the raw dict.
 
-        Failures are isolated per-segment (a bad frame never crashes the Core).
+        This is the WO-038 ``TCA1`` (non-RTP) test/compatibility path.  A segment
+        is only transcribed when an explicit transcriber is supplied.  When no
+        transcriber is configured the segment is dropped fail-closed — no fake
+        transcript is produced (WO-041-CORR F-01).  Failures are isolated
+        per-segment (a bad frame never crashes the Core).
         """
+        if self._transcriber is None:
+            logger.warning(
+                "MulticastAudioSourceAdapter '%s' dropped segment %s: "
+                "no STT transcriber (fail-closed)",
+                self._definition.name,
+                segment.content_id,
+            )
+            return
         try:
             raw = segment_to_raw(
                 segment,
@@ -220,33 +266,18 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             self._queue.append(raw)
 
     def _on_pcm(self, frame: RtpPcmFrame) -> None:
-        """RTP receiver hook: convert a decoded PCM frame into a segment.
+        """RTP receiver hook: feed the decoded PCM frame to the recorder.
 
-        The PCM is already decoded (A-law -> PCM S16LE) so the segment is
-        marked ``is_pcm=True`` and no ffmpeg decode is performed downstream.
-        A deterministic content id is derived from the SSRC + RTP timestamp so
-        distinct frames are distinct and repeated deliveries deduplicate.
+        The authoritative audio accumulation path is the per-source
+        :class:`TransmissionRecorder` (VAD -> WAV master).  A finalized recording
+        is handed to the :class:`SttWorker` via ``_on_recording`` so the derived
+        transcript is produced off the receiver thread.
 
-        When WO-039-B recording is enabled for the source, the frame is also fed
-        to the per-source :class:`TransmissionRecorder`.
+        WO-041-CORR F-02: NO packet-level transcript/STT event is produced from an
+        individual RTP packet.  The legacy per-packet ``_on_segment`` ->
+        ``segment_to_raw`` -> deterministic-transcriber path is eliminated for the
+        RTP transport; the only STT input is the finalized WAV master.
         """
-        segment = AudioSegment(
-            content_id=f"rtp-{frame.ssrc:x}-{frame.timestamp}",
-            audio_bytes=frame.pcm,
-            occurred_at=frame.received_at,
-            received_at=frame.received_at,
-            is_pcm=True,
-            metadata={
-                "rtp": True,
-                "sequence_number": frame.sequence_number,
-                "timestamp": frame.timestamp,
-                "ssrc": frame.ssrc,
-                "payload_type": frame.payload_type,
-                "sample_rate": frame.sample_rate,
-                "channels": frame.channels,
-            },
-        )
-        self._on_segment(segment)
         if self._recorder is not None:
             try:
                 self._recorder.on_pcm(frame)
@@ -300,3 +331,41 @@ def make_multicast_audio_adapter(
     Returns a configured, unstarted :class:`MulticastAudioSourceAdapter`.
     """
     return MulticastAudioSourceAdapter(definition=definition)
+
+
+def _build_production_stt_worker(
+    definition: SourceDefinition,
+    audio_config: AudioConfig,
+) -> SttWorker | None:
+    """Build a production :class:`SttWorker` from the source STT configuration.
+
+    Reads the optional ``stt`` block from ``definition.config`` (e.g. ``enabled``,
+    ``engine``, ``model_path``, ``language``).
+
+    Returns ``None`` when STT is disabled for the source.  When STT is enabled but
+    no authorized acoustic engine is registered (or the configuration is invalid),
+    a worker is still created in an explicit ``UNAVAILABLE`` (fail-closed) state —
+    it NEVER fabricates a transcript and NEVER falls back to
+    ``DeterministicTestTranscriber`` (WO-041-CORR F-01/F-03).
+
+    The worker is engine-neutral and offline: no engine is selected here, no model
+    is downloaded, and no network is touched.
+    """
+    stt_cfg = SttConfig.from_dict(definition.config.get("stt"))
+    if not stt_cfg.enabled:
+        return None
+    transcriber: ITranscriber | None = None
+    try:
+        transcriber = build_transcriber(stt_cfg)
+    except (SttEngineError, SttConfigError) as exc:
+        logger.warning(
+            "WO-041-CORR STT unavailable for source %r: %s",
+            audio_config.source_name,
+            exc,
+        )
+        transcriber = None
+    return SttWorker(
+        transcriber,
+        source=audio_config.source_name,
+        language=stt_cfg.language,
+    )

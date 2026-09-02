@@ -27,7 +27,7 @@ from app.audio.audio_segment import AudioSegment
 from app.audio.callsign import CallsignDetector
 from app.audio.decoder import AudioDecoder
 from app.audio.multicast_receiver import MulticastAudioReceiver
-from app.audio.transcriber import DeterministicTestTranscriber
+from app.contracts.audio import ITranscriber
 from app.event.event import Event
 from app.event.event_types import EventType
 from app.event_sources.factory.event_factory import EventFactory
@@ -39,7 +39,7 @@ def segment_to_raw(
     segment: AudioSegment,
     config: AudioConfig,
     decoder: AudioDecoder,
-    transcriber: DeterministicTestTranscriber,
+    transcriber: Any,  # requires the richer transcribe_detailed seam (WO-038 legacy path)
     callsign_detector: CallsignDetector,
 ) -> dict[str, Any]:
     """Turn one audio segment into an EventFactory-compatible raw dict.
@@ -50,7 +50,12 @@ def segment_to_raw(
 
     The raw dict carries ``timestamp`` (occurrence time) so the EventFactory
     maps it to ``Event.timestamp``; all other fields land in ``Event.payload``.
+
+    ``transcriber`` MUST be non-``None``; a ``None`` transcriber is a fail-closed
+    state and raises rather than fabricating a transcript (WO-041-CORR F-01).
     """
+    if transcriber is None:
+        raise ValueError("segment_to_raw requires a transcriber (fail-closed)")
     if segment.is_pcm:
         # The segment already carries decoded PCM (WO-039-A real RTP path):
         # no ffmpeg decode is performed for the verified PT=8 / A-law path.
@@ -95,7 +100,11 @@ class AudioEventOrchestrator:
         event_factory: The canonical :class:`EventFactory`.
         repository: The durable ``SQLAlchemyEventRepository`` (``save``).
         decoder: Optional :class:`AudioDecoder` (defaults to a new instance).
-        transcriber: Optional :class:`DeterministicTestTranscriber` (STT seam).
+        transcriber: Optional :class:`app.contracts.audio.ITranscriber`.  This is
+            the WO-038 TCA1 (non-RTP) test/compatibility seam.  It is NOT a
+            production default: when omitted the orchestrator runs fail-closed
+            (no STT) rather than silently substituting
+            ``DeterministicTestTranscriber`` (WO-041-CORR F-01).
         callsign_detector: Optional :class:`CallsignDetector`.
         event_type: Optional canonical :class:`EventType` for the produced event.
     """
@@ -107,7 +116,7 @@ class AudioEventOrchestrator:
         repository: Any,
         *,
         decoder: AudioDecoder | None = None,
-        transcriber: DeterministicTestTranscriber | None = None,
+        transcriber: ITranscriber | None = None,
         callsign_detector: CallsignDetector | None = None,
         event_type: EventType | None = None,
     ) -> None:
@@ -117,7 +126,7 @@ class AudioEventOrchestrator:
         self._decoder = decoder or AudioDecoder(
             sample_rate=config.sample_rate, channels=config.channels
         )
-        self._transcriber = transcriber or DeterministicTestTranscriber()
+        self._transcriber = transcriber
         self._callsign_detector = callsign_detector or CallsignDetector()
         self._event_type = event_type
         self._receiver: MulticastAudioReceiver | None = None
@@ -125,7 +134,15 @@ class AudioEventOrchestrator:
     # -- segment -> raw -----------------------------------------------------
 
     def build_raw(self, segment: AudioSegment) -> dict[str, Any]:
-        """Decode/transcribe/callsign one segment into a raw event dict."""
+        """Decode/transcribe/callsign one segment into a raw event dict.
+
+        Fail-closed (WO-041-CORR F-01): when no transcriber is configured the
+        call raises rather than fabricating a transcript.
+        """
+        if self._transcriber is None:
+            raise ValueError(
+                "no STT transcriber configured; cannot transcribe segment (fail-closed)"
+            )
         return segment_to_raw(
             segment,
             self._config,

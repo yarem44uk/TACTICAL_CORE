@@ -557,7 +557,14 @@ def test_multiple_sources_independent_state() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_rtp_adapter_reaches_source_boundary() -> None:
+def test_rtp_adapter_no_packet_level_stt() -> None:
+    """WO-041-CORR F-02 — RTP packets MUST NOT produce packet-level STT events.
+
+    Without a recorder / STT worker the RTP adapter accumulates no audio and
+    produces NO event from an individual RTP packet (fail-closed, no fake
+    transcript).  The production STT boundary is the finalized WAV master, never
+    a per-packet deterministic transcriber.
+    """
     port = _unique_port()
     definition = SourceDefinition(
         name="radio-rtp",
@@ -588,19 +595,18 @@ def test_rtp_adapter_reaches_source_boundary() -> None:
         sim = RtpSimulator(adapter._config, ssrc=REAL_SSRC)
         sim.send(payload=b"\x55" * 160)
         sim.send(payload=b"\x55" * 160)
-        deadline = time.time() + 8.0
-        raw_events: list[dict] = []
+        # Give the receiver time to process the packets.
+        deadline = time.time() + 2.0
         while time.time() < deadline:
-            raw_events = adapter.read_events()
-            if raw_events:
-                break
             time.sleep(0.05)
-        assert raw_events, "no raw events produced by the RTP adapter"
-        raw = raw_events[0]
-        assert raw["content_id"].startswith("rtp-")
-        assert raw["timestamp"] is not None
-        # PCM-derived raw dict carries RTP metadata (no ffmpeg decode path).
-        assert raw["stt_metadata"]["audio_bytes_len"] == 320
+        raw_events = adapter.read_events()
+        # No packet-level transcript/STT event is produced from RTP packets.
+        assert raw_events == [], (
+            "RTP packets must not produce per-packet STT events (WO-041-CORR F-02)"
+        )
+        # The adapter stays alive and healthy.
+        assert adapter.health() is True
+        assert adapter.is_running is True
     finally:
         adapter.stop()
         if sim is not None:
