@@ -35,6 +35,7 @@ from app.audio.orchestrator import segment_to_raw
 from app.audio.recorder import TransmissionRecorder
 from app.audio.recording_config import RecordingConfig
 from app.audio.rtp_receiver import RtpPcmFrame, RtpReceiver
+from app.audio.stt_worker import SttJob, SttWorker
 from app.audio.transcriber import DeterministicTestTranscriber
 from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
 from app.event_sources.config.source_definition import SourceDefinition
@@ -67,6 +68,7 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         transcriber: DeterministicTestTranscriber | None = None,
         callsign_detector: CallsignDetector | None = None,
         recorder: TransmissionRecorder | None = None,
+        stt_worker: SttWorker | None = None,
     ) -> None:
         super().__init__()
         self._definition = definition
@@ -92,6 +94,18 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
                 self._recorder = TransmissionRecorder(
                     self._config, rec_cfg, on_recording=self._on_recording
                 )
+
+        # WO-039-C3: bounded WAV STT worker.  When a worker is supplied it is
+        # wired so a finalized recording is transcribed off the receiver thread
+        # and the derived transcript event flows through the same read_events()
+        # -> EventFactory -> EventPipeline path as the recording event.  It is
+        # only created/started when explicitly provided (or built from config),
+        # so the legacy per-RTP STT path is never reactivated here.
+        self._stt_worker = stt_worker
+        if self._stt_worker is not None:
+            # Route transcript events into the adapter's read_events() queue.
+            self._stt_worker.on_transcript = self._on_transcript
+            self._stt_worker.start()
 
         logger.info(
             "MulticastAudioSourceAdapter '%s' configured "
@@ -163,6 +177,15 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             except Exception as exc:  # noqa: BLE001 - never crash stop()
                 logger.warning(
                     "MulticastAudioSourceAdapter '%s' recorder shutdown error: %s",
+                    self._definition.name,
+                    exc,
+                )
+        if self._stt_worker is not None:
+            try:
+                self._stt_worker.stop()
+            except Exception as exc:  # noqa: BLE001 - never crash stop()
+                logger.warning(
+                    "MulticastAudioSourceAdapter '%s' STT worker shutdown error: %s",
                     self._definition.name,
                     exc,
                 )
@@ -239,6 +262,31 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
 
         The raw dict flows through the existing ``read_events()`` -> EventFactory
         -> EventPipeline path (W-039-B §21), reusing the canonical event model.
+        When a WO-039-C3 STT worker is present, the finalized recording is ALSO
+        handed to the worker (off the RTP receiver thread) so a derived transcript
+        event is produced without blocking reception.
+        """
+        with self._queue_lock:
+            self._queue.append(raw)
+        if self._stt_worker is not None:
+            recording = raw.get("recording", {})
+            job = SttJob(
+                audio_recording_id=raw["audio_recording_id"],
+                wav_path=recording.get("wav_path", ""),
+                source=self._config.source_name,
+                language=self._stt_worker.language,
+                started_at=raw.get("occurred_at"),
+                sha256=recording.get("sha256"),
+            )
+            self._stt_worker.submit(job)
+
+    def _on_transcript(self, raw: dict[str, Any]) -> None:
+        """WO-039-C3 STT worker hook: queue a derived transcript raw event dict.
+
+        The transcript event flows through the same ``read_events()`` ->
+        EventFactory -> EventPipeline path as the recording event, so it is a
+        separate, append-only canonical event (never an UPDATE of the recording
+        event).
         """
         with self._queue_lock:
             self._queue.append(raw)
