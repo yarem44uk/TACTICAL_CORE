@@ -32,6 +32,8 @@ from app.audio.callsign import CallsignDetector
 from app.audio.decoder import AudioDecoder
 from app.audio.multicast_receiver import MulticastAudioReceiver
 from app.audio.orchestrator import segment_to_raw
+from app.audio.recorder import TransmissionRecorder
+from app.audio.recording_config import RecordingConfig
 from app.audio.rtp_receiver import RtpPcmFrame, RtpReceiver
 from app.audio.transcriber import DeterministicTestTranscriber
 from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
@@ -64,6 +66,7 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         decoder: AudioDecoder | None = None,
         transcriber: DeterministicTestTranscriber | None = None,
         callsign_detector: CallsignDetector | None = None,
+        recorder: TransmissionRecorder | None = None,
     ) -> None:
         super().__init__()
         self._definition = definition
@@ -80,6 +83,15 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         self._queue_lock = threading.Lock()
         self._receiver: Any = None
         self._credentials_ref = definition.credentials_ref
+        # WO-039-B: per-source recording pipeline.  Engaged only when the source
+        # config enables VAD-driven recording.
+        self._recorder = recorder
+        if self._recorder is None:
+            rec_cfg = RecordingConfig.from_source_definition(definition.config)
+            if rec_cfg.enabled:
+                self._recorder = TransmissionRecorder(
+                    self._config, rec_cfg, on_recording=self._on_recording
+                )
 
         logger.info(
             "MulticastAudioSourceAdapter '%s' configured "
@@ -145,6 +157,15 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         """Stop the adapter and its receiver.  Idempotent."""
         if self._receiver is not None:
             self._receiver.stop()
+        if self._recorder is not None:
+            try:
+                self._recorder.on_shutdown()
+            except Exception as exc:  # noqa: BLE001 - never crash stop()
+                logger.warning(
+                    "MulticastAudioSourceAdapter '%s' recorder shutdown error: %s",
+                    self._definition.name,
+                    exc,
+                )
         super().stop()
         with self._queue_lock:
             self._queue = []
@@ -182,6 +203,9 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         marked ``is_pcm=True`` and no ffmpeg decode is performed downstream.
         A deterministic content id is derived from the SSRC + RTP timestamp so
         distinct frames are distinct and repeated deliveries deduplicate.
+
+        When WO-039-B recording is enabled for the source, the frame is also fed
+        to the per-source :class:`TransmissionRecorder`.
         """
         segment = AudioSegment(
             content_id=f"rtp-{frame.ssrc:x}-{frame.timestamp}",
@@ -200,6 +224,24 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             },
         )
         self._on_segment(segment)
+        if self._recorder is not None:
+            try:
+                self._recorder.on_pcm(frame)
+            except Exception as exc:  # noqa: BLE001 - isolate recorder failure
+                logger.warning(
+                    "MulticastAudioSourceAdapter '%s' recorder error: %s",
+                    self._definition.name,
+                    exc,
+                )
+
+    def _on_recording(self, raw: dict[str, Any]) -> None:
+        """WO-039-B recorder hook: queue a finalized-recording raw event dict.
+
+        The raw dict flows through the existing ``read_events()`` -> EventFactory
+        -> EventPipeline path (W-039-B §21), reusing the canonical event model.
+        """
+        with self._queue_lock:
+            self._queue.append(raw)
 
 
 def make_multicast_audio_adapter(
