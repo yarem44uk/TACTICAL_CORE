@@ -32,6 +32,7 @@ from app.audio.callsign import CallsignDetector
 from app.audio.decoder import AudioDecoder
 from app.audio.multicast_receiver import MulticastAudioReceiver
 from app.audio.orchestrator import segment_to_raw
+from app.audio.rtp_receiver import RtpPcmFrame, RtpReceiver
 from app.audio.transcriber import DeterministicTestTranscriber
 from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
 from app.event_sources.config.source_definition import SourceDefinition
@@ -77,7 +78,7 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         self._callsign_detector = callsign_detector or CallsignDetector()
         self._queue: list[dict[str, Any]] = []
         self._queue_lock = threading.Lock()
-        self._receiver: MulticastAudioReceiver | None = None
+        self._receiver: Any = None
         self._credentials_ref = definition.credentials_ref
 
         logger.info(
@@ -124,12 +125,20 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
-        """Start the adapter and its multicast receiver.  Idempotent."""
+        """Start the adapter and its receiver.  Idempotent.
+
+        For ``protocol="rtp"`` the adapter uses the real RTP receiver
+        (UDP -> RTP -> G.711 A-law -> PCM); otherwise it uses the WO-038
+        ``TCA1`` test-frame receiver.
+        """
         super().start()
         if self._receiver is None:
-            self._receiver = MulticastAudioReceiver(
-                self._config, on_segment=self._on_segment
-            )
+            if self._config.is_rtp:
+                self._receiver = RtpReceiver(self._config, on_pcm=self._on_pcm)
+            else:
+                self._receiver = MulticastAudioReceiver(
+                    self._config, on_segment=self._on_segment
+                )
         self._receiver.start()
 
     def stop(self) -> None:
@@ -165,6 +174,32 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
             return
         with self._queue_lock:
             self._queue.append(raw)
+
+    def _on_pcm(self, frame: RtpPcmFrame) -> None:
+        """RTP receiver hook: convert a decoded PCM frame into a segment.
+
+        The PCM is already decoded (A-law -> PCM S16LE) so the segment is
+        marked ``is_pcm=True`` and no ffmpeg decode is performed downstream.
+        A deterministic content id is derived from the SSRC + RTP timestamp so
+        distinct frames are distinct and repeated deliveries deduplicate.
+        """
+        segment = AudioSegment(
+            content_id=f"rtp-{frame.ssrc:x}-{frame.timestamp}",
+            audio_bytes=frame.pcm,
+            occurred_at=frame.received_at,
+            received_at=frame.received_at,
+            is_pcm=True,
+            metadata={
+                "rtp": True,
+                "sequence_number": frame.sequence_number,
+                "timestamp": frame.timestamp,
+                "ssrc": frame.ssrc,
+                "payload_type": frame.payload_type,
+                "sample_rate": frame.sample_rate,
+                "channels": frame.channels,
+            },
+        )
+        self._on_segment(segment)
 
 
 def make_multicast_audio_adapter(

@@ -54,6 +54,7 @@ class AudioSegment:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     metadata: dict[str, Any] = field(default_factory=dict)
+    is_pcm: bool = False
 
     def __post_init__(self) -> None:
         if self.occurred_at.tzinfo is None:

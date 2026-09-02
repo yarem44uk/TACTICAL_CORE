@@ -44,13 +44,19 @@ def segment_to_raw(
 ) -> dict[str, Any]:
     """Turn one audio segment into an EventFactory-compatible raw dict.
 
-    Steps: decode (ffmpeg -> PCM), transcribe (through the STT seam), detect
-    callsigns (deterministic).  The original transcript is always preserved.
+    Steps: decode (ffmpeg -> PCM, or pass-through when the segment already
+    carries PCM), transcribe (through the STT seam), detect callsigns
+    (deterministic).  The original transcript is always preserved.
 
     The raw dict carries ``timestamp`` (occurrence time) so the EventFactory
     maps it to ``Event.timestamp``; all other fields land in ``Event.payload``.
     """
-    pcm = decoder.decode_segment(segment.audio_bytes, config.codec)
+    if segment.is_pcm:
+        # The segment already carries decoded PCM (WO-039-A real RTP path):
+        # no ffmpeg decode is performed for the verified PT=8 / A-law path.
+        pcm = segment.audio_bytes
+    else:
+        pcm = decoder.decode_segment(segment.audio_bytes, config.codec)
     transcript_result = transcriber.transcribe_detailed(
         content_id=segment.content_id,
         audio_data=pcm,
