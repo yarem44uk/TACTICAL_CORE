@@ -65,6 +65,20 @@ from app.audio.segmenter import (
     SegmentState,
     TransmissionSegmenter,
 )
+from app.audio.stt_config import (
+    SUPPORTED_ENGINES,
+    SttConfig,
+    SttConfigError,
+    resolve_model_path,
+)
+from app.audio.stt_seam import (
+    AbstractSttAdapter,
+    SttEngineError,
+    SttEngineUnavailableError,
+    SttEngineUnknownError,
+    build_transcriber,
+    register_engine,
+)
 from app.audio.transcriber import (
     DeterministicTestTranscriber,
     TranscriptResult,
@@ -73,6 +87,7 @@ from app.audio.vad import EnergyVad, VadConfig, pcm_rms
 from app.audio.wav_writer import WavResult, WavWriteError, write_wav_atomic
 
 __all__ = [
+    "AbstractSttAdapter",
     "AudioConfig",
     "AudioDecoder",
     "AudioEventOrchestrator",
@@ -94,9 +109,15 @@ __all__ = [
     "RtpReceiver",
     "RtpSimulator",
     "RtpStreamTracker",
+    "SUPPORTED_ENGINES",
     "SegmentConfig",
     "SegmentResult",
     "SegmentState",
+    "SttConfig",
+    "SttConfigError",
+    "SttEngineError",
+    "SttEngineUnavailableError",
+    "SttEngineUnknownError",
     "TranscriptResult",
     "TransmissionRecorder",
     "TransmissionSegmenter",
@@ -109,12 +130,15 @@ __all__ = [
     "build_recording_id",
     "build_recording_paths",
     "build_rtp_packet",
+    "build_transcriber",
     "decode_frame",
     "encode_frame",
     "encode_mp3",
     "parse_rtp_packet",
     "pcm_rms",
     "pcm_to_alaw",
+    "register_engine",
+    "resolve_model_path",
     "sanitize_source",
     "validate_rtp_packet",
     "write_wav_atomic",
