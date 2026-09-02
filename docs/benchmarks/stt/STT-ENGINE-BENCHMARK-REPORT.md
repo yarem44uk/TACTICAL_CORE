@@ -2,7 +2,7 @@
 
 **WO:** WO-040 — Real Acoustic STT Benchmark & Engine Selection Evidence Gate
 **Date:** 2026-09-02
-**Baseline (parent):** `f5ef9729333dc888b8d658c5cbf6ccc36eaf51cd`
+**Baseline / parent:** `bcdad704644c80f5b2a21f5342e591cf6f04f782` (the ADR-014 commit)
 **ADR:** [ADR-014](../adr/ADR-014-Real-Acoustic-STT-Engine-Selection-and-Benchmark-Gate.md) (Status: Proposed)
 **Current production STT decision:** `NOT_YET_JUSTIFIED`
 
