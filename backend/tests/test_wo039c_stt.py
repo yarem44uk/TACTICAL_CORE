@@ -812,3 +812,152 @@ def test_c3_repeated_stop_and_idempotent_start() -> None:
     assert worker.stop(timeout=5) is True
     assert worker._thread is None
     assert worker.stop(timeout=0.1) is True
+
+
+# ---------------------------------------------------------------------------
+# WO-039-C3 corrective 2 — concurrent start()/stop() lifecycle race-safety
+# ---------------------------------------------------------------------------
+#
+# Independent audit finding: the lifecycle state transition between start() and
+# stop() must be race-safe when invoked from different threads.  The invariant:
+# AT MOST ONE live worker thread may exist for one SttWorker instance, and a
+# live previous worker must never be replaced by a newly created worker.  These
+# tests force the interleaving and prove it by counting thread creation, not by
+# asserting the current ``_thread`` reference alone.
+
+
+class _LifecycleRecordingWorker(SttWorker):
+    """SttWorker that records every distinct worker thread it creates.
+
+    Used to *prove* the single-worker invariant: it counts actual thread
+    creation, so a test can assert that a second worker thread was never created
+    while the original was still alive (rather than only checking the current
+    ``_thread`` reference, which could hide a forgotten live thread).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.created_threads: list[threading.Thread] = []
+        self._created_lock = threading.Lock()
+
+    def start(self) -> None:
+        with self._lock:
+            prev = self._thread
+        super().start()
+        with self._lock:
+            new = self._thread
+        if new is not None and new is not prev:
+            with self._created_lock:
+                self.created_threads.append(new)
+
+
+def test_c3_concurrent_stop_timeout_then_start_never_second_worker(
+    tmp_path,
+) -> None:
+    """TEST 1 -- a live worker is never replaced by a newly created worker.
+
+    Force the interleaving: worker is alive -> stop() begins and times out ->
+    start() is called.  Assert the original live thread is retained and that a
+    second worker thread was never created (unique thread count == 1).
+    """
+    wav, _ = _write_wav(str(tmp_path))
+    fake = _BlockingTranscriber()
+    worker = _LifecycleRecordingWorker(fake, source="radio")
+    worker.start()
+    assert worker.submit(_job("rec-block", wav)) is True
+    # The worker is now blocked inside transcribe(): it is genuinely alive.
+    assert fake.entered.wait(timeout=5)
+    original = worker._thread
+    assert original is not None
+    assert original.is_alive()
+    # stop() begins and times out: the live worker must NOT be forgotten.
+    assert worker.stop(timeout=0.05) is False
+    assert worker._thread is original
+    assert original.is_alive()
+    # A concurrent start() must NOT spawn a second worker on this instance.
+    worker.start()
+    assert worker._thread is original
+    assert original.is_alive()
+    # Prove only ONE worker thread was ever created for this instance.
+    assert len(worker.created_threads) == 1
+    assert worker.created_threads[0] is original
+    # Clean up.
+    fake.release.set()
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+    assert original.is_alive() is False
+
+
+def test_c3_repeated_concurrent_lifecycle_never_two_workers(tmp_path) -> None:
+    """TEST 2 -- repeated concurrent start()/stop() calls keep a single worker.
+
+    Exercise many start()/stop(short) cycles from multiple threads at once.  The
+    instance must never have more than one live worker: because the original
+    worker stays blocked, no second thread may ever be created.
+    """
+    wav, _ = _write_wav(str(tmp_path))
+    fake = _BlockingTranscriber()
+    worker = _LifecycleRecordingWorker(fake, source="radio")
+    worker.start()
+    assert worker.submit(_job("rec-block", wav)) is True
+    assert fake.entered.wait(timeout=5)
+
+    def hammer_start() -> None:
+        for _ in range(200):
+            worker.start()
+
+    def hammer_stop() -> None:
+        for _ in range(200):
+            try:
+                worker.stop(timeout=0.0)
+            except Exception:  # noqa: BLE001 - lifecycle calls must never raise
+                pass
+
+    threads = [
+        threading.Thread(target=hammer_start),
+        threading.Thread(target=hammer_stop),
+        threading.Thread(target=hammer_start),
+        threading.Thread(target=hammer_stop),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # While the original worker stayed alive, no second worker was created.
+    assert len(worker.created_threads) == 1
+    assert worker._thread is worker.created_threads[0]
+    assert worker._thread.is_alive()
+    # Clean up.
+    fake.release.set()
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+
+
+def test_c3_clean_termination_restart_creates_exactly_one_new_worker(
+    tmp_path,
+) -> None:
+    """TEST 3 -- clean termination permits exactly one new worker on restart.
+
+    start -> worker terminates -> stop returns True -> _thread is None ->
+    start -> exactly one NEW worker -> stop returns True.
+    """
+    wav, _ = _write_wav(str(tmp_path))
+    fake = _FakeSttTranscriber(text="ok")
+    worker = _LifecycleRecordingWorker(fake, source="radio")
+    worker.start()
+    assert worker.submit(_job("rec-1", wav)) is True
+    assert worker.wait_idle(timeout=5)
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+    assert len(worker.created_threads) == 1
+    # Restart: exactly one new worker, distinct from the first.
+    worker.start()
+    new_worker = worker._thread
+    assert new_worker is not None
+    assert new_worker.is_alive()
+    assert len(worker.created_threads) == 2
+    assert worker.created_threads[0] is not worker.created_threads[1]
+    assert new_worker is worker.created_threads[1]
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
