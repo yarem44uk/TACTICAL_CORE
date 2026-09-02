@@ -230,20 +230,32 @@ class RtpReceiver:
         return addr
 
     def _bind(self) -> socket.socket:
-        """Create and bind the UDP socket, joining the multicast group."""
+        """Create and bind the UDP socket, joining the multicast group.
+
+        If binding or multicast-membership setup fails, the partially-created
+        socket is closed before the error propagates so a failed bind never
+        leaks the port (WO-039-A reliability fix).
+        """
         config = self._config
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        # SO_REUSEADDR so a same-host simulator and receiver can coexist.
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((config.bind_address or "", config.multicast_port))
-        mreq = struct.pack(
-            "4s4s",
-            socket.inet_aton(config.multicast_address),
-            socket.inet_aton(self._interface_ip()),
-        )
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.settimeout(config.frame_timeout)
-        return sock
+        try:
+            # SO_REUSEADDR so a same-host simulator and receiver can coexist.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((config.bind_address or "", config.multicast_port))
+            mreq = struct.pack(
+                "4s4s",
+                socket.inet_aton(config.multicast_address),
+                socket.inet_aton(self._interface_ip()),
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.settimeout(config.frame_timeout)
+            return sock
+        except OSError:
+            try:
+                sock.close()
+            except OSError:  # pragma: no cover - defensive
+                pass
+            raise
 
     def _drop_membership(self, sock: socket.socket) -> None:
         """Leave the multicast group (best-effort on shutdown)."""
@@ -259,35 +271,45 @@ class RtpReceiver:
 
     def _run(self) -> None:
         """Receiver thread body.  Never raises out of the loop."""
+        sock: socket.socket | None = None
         try:
-            sock = self._bind()
-        except OSError as exc:
-            self._record_error(f"bind failed: {exc}")
-            logger.error("WO-039-A RTP receiver bind failed: %s", exc)
-            return
-
-        with self._lock:
-            self._socket = sock
-
-        try:
-            while not self._stop_event.is_set():
-                try:
-                    payload, _addr = sock.recvfrom(self._config.receive_buffer)
-                except TimeoutError:
-                    continue
-                except OSError as exc:
-                    self._record_error(f"recv failed: {exc}")
-                    logger.warning("WO-039-A RTP receiver recv failed: %s", exc)
-                    break
-                self._handle_payload(payload)
-        finally:
-            self._drop_membership(sock)
             try:
-                sock.close()
-            except OSError:  # pragma: no cover - defensive
-                pass
+                sock = self._bind()
+            except OSError as exc:
+                self._record_error(f"bind failed: {exc}")
+                logger.error("WO-039-A RTP receiver bind failed: %s", exc)
+                return
+
             with self._lock:
-                self._socket = None
+                self._socket = sock
+
+            try:
+                while not self._stop_event.is_set():
+                    try:
+                        payload, _addr = sock.recvfrom(self._config.receive_buffer)
+                    except TimeoutError:
+                        continue
+                    except OSError as exc:
+                        self._record_error(f"recv failed: {exc}")
+                        logger.warning("WO-039-A RTP receiver recv failed: %s", exc)
+                        break
+                    self._handle_payload(payload)
+            finally:
+                self._drop_membership(sock)
+                try:
+                    sock.close()
+                except OSError:  # pragma: no cover - defensive
+                    pass
+                with self._lock:
+                    self._socket = None
+        finally:
+            # Guarantee the lifecycle state reflects thread termination no
+            # matter how the receiver exited: bind failure, recv error, or an
+            # unexpected terminal exception.  Without this, _running stays True
+            # after a failed source dies, so is_active()/snapshot().running lie
+            # and start() can no longer restart the receiver.
+            with self._lock:
+                self._running = False
 
     def _handle_payload(self, payload: bytes) -> None:
         """Parse/validate one datagram, decode, and dispatch a PCM frame."""

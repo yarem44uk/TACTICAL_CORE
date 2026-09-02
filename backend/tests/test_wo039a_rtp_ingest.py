@@ -630,3 +630,98 @@ def test_audio_config_tca1_preserved() -> None:
     assert cfg.is_rtp is False
     assert cfg.codec is None
     assert cfg.sample_rate == 16000
+
+
+# ---------------------------------------------------------------------------
+# TEST 11 — Receiver lifecycle: a terminal failure must clear the running
+# state (WO-039-A reliability fix).  A failed source must NOT report
+# is_active()/snapshot()['running'] == True, and start() must be able to
+# restart it.  Regression for the defect where _running stayed True after a
+# bind failure / recv error, so is_active() lied and start() became a no-op.
+# ---------------------------------------------------------------------------
+
+
+def test_receiver_bind_failure_clears_running_state_and_restarts() -> None:
+    """A multicast bind failure must terminate the thread and clear _running.
+
+    The port is occupied WITHOUT SO_REUSEADDR so the receiver's ``bind()`` is
+    rejected (EADDRINUSE) — a real, deterministic terminal receiver failure.
+    """
+    port = _unique_port()
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    receiver: RtpReceiver | None = None
+    try:
+        blocker.bind(("", port))
+        cfg = _rtp_config(port)
+        receiver = RtpReceiver(cfg, on_pcm=lambda frame: None)
+        receiver.start()
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline and receiver.is_active():
+            time.sleep(0.02)
+
+        # The thread terminated and the running state must reflect it.
+        assert receiver.is_active() is False
+        snap = receiver.snapshot()
+        assert snap["running"] is False
+        assert "bind failed" in (snap["last_error"] or "")
+        assert receiver.is_bound() is False
+        # No receiver thread is leaked.
+        thread = getattr(receiver, "_thread", None)
+        assert thread is not None and thread.is_alive() is False
+
+        # Release the port: the receiver must be restartable.
+        blocker.close()
+        time.sleep(0.05)
+        receiver.start()
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not receiver.is_bound():
+            time.sleep(0.02)
+        assert receiver.is_bound() is True
+        assert receiver.is_active() is True
+    finally:
+        blocker.close()
+        if receiver is not None:
+            receiver.stop()
+
+
+def test_receiver_recv_error_clears_running_state_and_restarts() -> None:
+    """A socket recv error after a successful bind must terminate the thread,
+    clean up the socket, and clear _running so the source can restart."""
+    port = _unique_port()
+    cfg = _rtp_config(port)
+    receiver = RtpReceiver(cfg, on_pcm=lambda frame: None)
+    receiver.start()
+    try:
+        _wait_for_bind(receiver)
+        assert receiver.is_active() is True
+
+        # Force a real recv error by closing the bound socket underneath the
+        # receiver; the blocked recvfrom then raises EBADF through the actual
+        # receiver lifecycle (no _running mutation in the test).
+        sock = getattr(receiver, "_socket", None)
+        assert sock is not None
+        sock.close()
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline and receiver.is_active():
+            time.sleep(0.02)
+
+        assert receiver.is_active() is False
+        snap = receiver.snapshot()
+        assert snap["running"] is False
+        assert "recv failed" in (snap["last_error"] or "")
+        # The receiver's finally block cleared the socket reference.
+        assert receiver.is_bound() is False
+        thread = getattr(receiver, "_thread", None)
+        assert thread is not None and thread.is_alive() is False
+
+        # Restart must be possible after the terminal recv error.
+        receiver.start()
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not receiver.is_bound():
+            time.sleep(0.02)
+        assert receiver.is_bound() is True
+        assert receiver.is_active() is True
+    finally:
+        receiver.stop()
