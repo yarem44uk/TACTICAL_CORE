@@ -199,7 +199,10 @@ class SttWorker:
 
     def start(self) -> None:
         with self._lock:
-            if self._thread is not None:
+            # Idempotent: only a *live* worker blocks a new start.  A stale
+            # (already terminated) thread object is replaced so the worker can
+            # be restarted after a clean stop.
+            if self._thread is not None and self._thread.is_alive():
                 return
             self._stop.clear()
             self._thread = threading.Thread(
@@ -207,12 +210,41 @@ class SttWorker:
             )
             self._thread.start()
 
-    def stop(self, timeout: float = 2.0) -> None:
+    def stop(self, timeout: float = 2.0) -> bool:
+        """Request the worker to stop and wait up to ``timeout`` for termination.
+
+        Lifecycle policy (deterministic, race-safe -- WO-039-C3 corrective):
+
+        * ``_stop`` is set first so the worker loop exits at the next boundary.
+        * The join is performed WITHOUT holding ``_lock`` (an indefinite join
+          must never block ``start()``/``submit()``).
+        * A live worker thread is NEVER forgotten: ``_thread`` is cleared only
+          once the referenced thread has actually terminated.
+
+        Returns:
+            ``True``  -- the worker thread has actually terminated (fully
+            stopped); internal thread state has been cleared.
+            ``False`` -- the worker is still alive after ``timeout``; the thread
+            reference is retained so a concurrent ``start()`` cannot spawn a
+            second worker against this instance.
+        """
         self._stop.set()
-        thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout)
-        self._thread = None
+        with self._lock:
+            thread = self._thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            # Cannot join ourselves; the worker loop exits on the stop event.
+            return not thread.is_alive()
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            # Timeout: still running.  Keep the reference; never forget a live
+            # worker (Policy A -- report timeout/failure, retain the thread).
+            return False
+        with self._lock:
+            if self._thread is thread:
+                self._thread = None
+        return True
 
     # -- submission ---------------------------------------------------------
 

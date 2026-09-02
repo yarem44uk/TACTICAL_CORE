@@ -363,7 +363,7 @@ def _job(recording_id: str, wav_path: str, **kwargs: Any) -> SttJob:
 
 
 def _worker(
-    fake: _FakeSttTranscriber,
+    fake: ITranscriber,
     *,
     maxsize: int = 10,
     on_transcript: Any = None,
@@ -710,3 +710,105 @@ def test_c3_no_legacy_per_rtp_stt_reactivated(tmp_path) -> None:
     contents = list(adapter._queue)
     assert len(contents) == 1  # only the recording event, no transcript
     assert contents[0]["content_id"] == "rec-abc"
+
+
+# ---------------------------------------------------------------------------
+# WO-039-C3 corrective — SttWorker.stop() lifecycle / thread tracking
+# ---------------------------------------------------------------------------
+#
+# Independent audit finding: the original ``stop()`` cleared ``_thread`` after
+# a timed ``join()`` even when the worker was STILL alive (long-running
+# ``transcribe()`` outliving the timeout).  That let ``start()`` spawn a second
+# concurrent worker against the same instance.  These tests reproduce the defect
+# and pin the corrective policy: a live worker is NEVER forgotten.
+
+
+class _BlockingTranscriber(ITranscriber):
+    """Fake transcriber whose ``transcribe()`` blocks until released.
+
+    Reproduces a long-running inference that outlives the ``stop()`` timeout.
+    """
+
+    def __init__(self, text: str = "blocked") -> None:
+        self._text = text
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.transcribe_calls: list[tuple[bytes, str | None]] = []
+
+    @property
+    def model(self) -> str:
+        return "fake-blocking"
+
+    def is_ready(self) -> bool:
+        return True
+
+    def transcribe(self, audio_data: bytes, language: str | None = None) -> str:
+        self.transcribe_calls.append((audio_data, language))
+        self.entered.set()
+        # Block until the test releases the transcriber (simulates long STT).
+        self.release.wait(timeout=10)
+        return self._text
+
+
+def test_c3_stop_timeout_never_forgets_live_worker(tmp_path) -> None:
+    wav, _ = _write_wav(str(tmp_path))
+    fake = _BlockingTranscriber()
+    worker = _worker(fake)
+    worker.start()
+    assert worker.submit(_job("rec-block", wav)) is True
+    # Wait until transcribe() has been entered: the worker is now blocked in a
+    # long-running inference that outlives a short stop timeout.
+    assert fake.entered.wait(timeout=5)
+    # Short timeout -> stop() must report the worker is still alive (Policy A),
+    # and must NOT forget the live thread by clearing _thread.
+    assert worker.stop(timeout=0.05) is False
+    assert worker._thread is not None
+    assert worker._thread.is_alive()
+    original = worker._thread
+    # A second start() must NOT spawn a second concurrent worker on this
+    # instance: the live thread is retained, so start() stays idempotent.
+    worker.start()
+    assert worker._thread is original
+    assert worker._thread.is_alive()
+    # Release the transcriber so the original worker can finish and exit.
+    fake.release.set()
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+    # The captured worker thread has actually terminated (no leak).
+    assert original.is_alive() is False
+
+
+def test_c3_stop_clean_termination_allows_restart(tmp_path) -> None:
+    wav, _ = _write_wav(str(tmp_path))
+    fake = _FakeSttTranscriber(text="ok")
+    worker = _worker(fake)
+    worker.start()
+    assert worker.submit(_job("rec-1", wav)) is True
+    assert worker.wait_idle(timeout=5)
+    # Normal path: the worker finishes before the stop timeout -> clean stop.
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+    # A fresh worker may safely be created after a clean stop.
+    worker.start()
+    assert worker._thread is not None
+    assert worker._thread.is_alive()
+    # Clean up.
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+
+
+def test_c3_repeated_stop_and_idempotent_start() -> None:
+    fake = _FakeSttTranscriber(text="ok")
+    worker = _worker(fake)
+    # Repeated stop before any start is safe.
+    assert worker.stop(timeout=0.1) is True
+    assert worker.stop(timeout=0.1) is True
+    # start() is idempotent while running.
+    worker.start()
+    worker.start()
+    assert worker._thread is not None
+    assert worker._thread.is_alive()
+    # Repeated stop while running is safe.
+    assert worker.stop(timeout=5) is True
+    assert worker._thread is None
+    assert worker.stop(timeout=0.1) is True
