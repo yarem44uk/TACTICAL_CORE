@@ -1,8 +1,10 @@
 # STT Engine Benchmark Report
 
 **WO:** WO-040 — Real Acoustic STT Benchmark & Engine Selection Evidence Gate
+**Corrective:** WO-040-CORR (measurements) and WO-040-CORR-02 (genuine COLD/WARM lifecycle)
 **Date:** 2026-09-02
 **Baseline / parent:** `bcdad704644c80f5b2a21f5342e591cf6f04f782` (the ADR-014 commit)
+**Corrective baseline:** `26a3179a097992d99a9dbb865631bebd089ba146` (WO-040-CORR)
 **ADR:** [ADR-014](../adr/ADR-014-Real-Acoustic-STT-Engine-Selection-and-Benchmark-Gate.md) (Status: Proposed)
 **Current production STT decision:** `NOT_YET_JUSTIFIED`
 
@@ -22,6 +24,8 @@ It is important to distinguish two different things:
 **TOOLING STATUS** — the benchmark harness is implemented and validated. It
 is capable of executing the ADR-014 benchmark *when* a candidate runtime/model
 and a dataset of real radio recordings are provisioned locally. The harness
+runs each candidate through a genuine COLD/WARM session lifecycle (the
+candidate is initialized exactly once and reused for warm inference) and
 measures latency, RTF, CPU, RAM, GPU, VRAM, WER, CER, callsign accuracy, and
 accounts for failures and timeouts per record. This status is **VALIDATED**
 (`docs/benchmarks/stt/test_run_benchmark.py` passes).
@@ -163,6 +167,13 @@ explicitly prohibited by WO-040 §8 (offline requirement; all models and runtime
 components must already exist locally). Downloading would also violate
 ADR-014's engine-neutral gate.
 
+The harness (WO-040-CORR-02) now implements a genuine COLD phase as part of a
+candidate session lifecycle: the session is created and the runtime/model is
+initialized exactly once, then the first record is transcribed, and cold
+latency = initialization time + inference time. This is harness capability
+only; because no candidate runtime/model exists, the COLD phase was not
+executed.
+
 ## 12. Warm / inference results
 
 ```text
@@ -170,6 +181,13 @@ NOT EXECUTED
 ```
 
 Same reason as §11.
+
+The harness (WO-040-CORR-02) now implements a genuine WARM phase that reuses
+the already-initialized candidate session for inference only, without
+reconstructing the model; warm latency = inference time. This is harness
+capability only; because no candidate runtime/model exists, the WARM phase was
+not executed. The two phases are behaviorally distinct and recorded separately
+in the per-record result model (`run_phase`), but neither produced evidence here.
 
 ## 13. WER
 
@@ -331,7 +349,7 @@ NO PRODUCTION STT ENGINE AUTHORIZED
 ## Appendix — Verification evidence
 
 - STT regression suite (`backend/tests/test_wo039c_stt.py`): **47 passed**.
-- Benchmark-specific tests (`docs/benchmarks/stt/test_run_benchmark.py`): **31 passed**.
+- Benchmark-specific tests (`docs/benchmarks/stt/test_run_benchmark.py`): **41 passed**.
 - `dataset_manifest.csv`: **36 rows**, 36 distinct SHA-256, all format-compliant,
   `ground_truth=""` for all, `real_transmission="false"` for all (the fixtures
   are not relabelled as real radio).
@@ -339,6 +357,14 @@ NO PRODUCTION STT ENGINE AUTHORIZED
 - Benchmark harness (WO-040-CORR): the per-record result model, candidate runner
   boundary, latency/RTF/CPU/RAM/GPU/VRAM measurement, failure/timeout accounting,
   aggregation, cold/warm support, results CSV (LF), and ADR-014 gate evaluation
-  are implemented and validated by the 31 benchmark-specific tests.
+  are implemented and validated by the 41 benchmark-specific tests.
+- Benchmark harness (WO-040-CORR-02): the COLD/WARM phases are now genuine and
+  behaviorally distinct. A candidate session is created and initialized exactly
+  once (COLD), and the same initialized session is reused for every warm
+  inference (WARM); the model is never reconstructed per warm input. Cold
+  latency = initialization + inference; warm latency = inference only. This is
+  proven by lifecycle tests (`test_cold_warm_lifecycle_initializes_once` and
+  others) using deterministic fake sessions — fakes are never treated as real
+  benchmark evidence.
 - No production source, test, backlog, schema, or existing-ADR file was modified
-  (see the WO-040-CORR mutation proof in the work-order report).
+  (see the WO-040-CORR / WO-040-CORR-02 mutation proof in the work-order report).

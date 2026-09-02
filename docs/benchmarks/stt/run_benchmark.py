@@ -37,8 +37,21 @@ NEVER replaces the deterministic test transcriber, and NEVER modifies
 production configuration.  Benchmark execution is isolated behind a candidate
 runner boundary (WO-040-CORR §5).
 
+WO-040-CORR-02 makes ``COLD`` and ``WARM`` genuine, behaviorally distinct
+execution phases instead of labels.  A ``CandidateSession`` lifecycle is used:
+
+    create session
+        -> initialize()      (COLD: runtime/model initialization, once)
+        -> transcribe #1     (COLD: latency = initialization + inference)
+        -> transcribe #2..N  (WARM: latency = inference only, model reused)
+        -> close()
+
+The candidate model is initialized exactly once and reused for every warm
+inference; it is never reconstructed per warm input.  This is benchmark-only
+(WO-040-CORR-02 §4/§10).
+
 Author: Tactical Core Engineering Team
-Version: 1.1
+Version: 1.2
 """
 
 from __future__ import annotations
@@ -515,6 +528,130 @@ def _gpu_usage() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Candidate session lifecycle (WO-040-CORR-02 §4/§5/§6).
+#
+# A session is created once, initialized once (COLD), and reused for every
+# subsequent inference (WARM).  The model is never reconstructed per warm
+# input.  This is benchmark-only; it never registers into the production seam.
+# ---------------------------------------------------------------------------
+class CandidateSession:
+    """Lifecycle abstraction: initialize once, transcribe many, reuse.
+
+    ``initialize()`` performs the expensive runtime/model load and returns the
+    measured initialization time (seconds).  ``transcribe()`` runs inference on
+    an already-initialized session.  ``close()`` releases resources (only if
+    required).  ``transcribe()`` must not re-initialize the model.
+    """
+
+    def initialize(self) -> float:
+        raise NotImplementedError
+
+    def transcribe(self, audio_path: str, audio_bytes: bytes, sample_rate: int) -> str:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class FasterWhisperSession(CandidateSession):
+    """Benchmark-only faster_whisper lifecycle (WO-040-CORR-02 §5).
+
+    COLD: ``initialize()`` constructs ``WhisperModel`` once.  WARM:
+    ``transcribe()`` reuses the already-initialized ``WhisperModel`` instance;
+    it never constructs a new model for a warm input.
+    """
+
+    def __init__(self, config: CandidateConfig) -> None:
+        self.config = config
+        self._model: Any = None
+        self._initialized = False
+        self.initialize_seconds: float | None = None
+
+    def initialize(self) -> float:
+        if self._initialized:
+            return 0.0
+        try:
+            from faster_whisper import WhisperModel  # noqa: N813
+        except Exception as exc:  # noqa: BLE001
+            raise CandidateUnavailable(f"faster_whisper runtime not installed: {exc}") from exc
+        if not self.config.model_path:
+            raise CandidateUnavailable("faster_whisper model not present locally")
+        t0 = time.perf_counter()
+        self._model = WhisperModel(self.config.model_path, device=self.config.device)
+        dt = time.perf_counter() - t0
+        self.initialize_seconds = dt
+        self._initialized = True
+        return dt
+
+    def transcribe(self, audio_path: str, audio_bytes: bytes, sample_rate: int) -> str:
+        if not self._initialized:
+            raise RuntimeError("FasterWhisperSession not initialized; call initialize() first")
+        segments, _info = self._model.transcribe(audio_path, language=self.config.language, beam_size=5)
+        return "".join(seg.text for seg in segments).strip()
+
+    def close(self) -> None:
+        self._model = None
+        self._initialized = False
+
+
+class VoskSession(CandidateSession):
+    """Benchmark-only vosk lifecycle (WO-040-CORR-02 §6).
+
+    COLD: ``initialize()`` constructs ``Model`` once.  WARM: ``transcribe()``
+    reuses the initialized ``Model``; it creates only a per-input
+    ``KaldiRecognizer`` (whose state must be reset per audio sample) while
+    reusing the expensive model object.  The model is never reloaded per warm
+    input.
+    """
+
+    def __init__(self, config: CandidateConfig) -> None:
+        self.config = config
+        self._model: Any = None
+        self._initialized = False
+        self.initialize_seconds: float | None = None
+
+    def initialize(self) -> float:
+        if self._initialized:
+            return 0.0
+        try:
+            from vosk import Model, SetLogLevel  # noqa: N813
+        except Exception as exc:  # noqa: BLE001
+            raise CandidateUnavailable(f"vosk runtime not installed: {exc}") from exc
+        if not self.config.model_path:
+            raise CandidateUnavailable("vosk model not present locally")
+        SetLogLevel(-1)
+        t0 = time.perf_counter()
+        self._model = Model(self.config.model_path)
+        dt = time.perf_counter() - t0
+        self.initialize_seconds = dt
+        self._initialized = True
+        return dt
+
+    def transcribe(self, audio_path: str, audio_bytes: bytes, sample_rate: int) -> str:
+        if not self._initialized:
+            raise RuntimeError("VoskSession not initialized; call initialize() first")
+        from vosk import KaldiRecognizer  # noqa: N813
+        rec = KaldiRecognizer(self._model, sample_rate)
+        rec.AcceptWaveform(audio_bytes)
+        result = rec.FinalResult()
+        import json as _json
+        return (_json.loads(result).get("text", "") or "").strip()
+
+    def close(self) -> None:
+        self._model = None
+        self._initialized = False
+
+
+def create_candidate_session(candidate: str, config: CandidateConfig) -> CandidateSession:
+    """Return the benchmark-only lifecycle session for a candidate."""
+    if candidate == "faster_whisper":
+        return FasterWhisperSession(config)
+    if candidate == "vosk":
+        return VoskSession(config)
+    raise ValueError(f"candidate {candidate!r} not in {CANDIDATES}")
+
+
+# ---------------------------------------------------------------------------
 # Candidate runner boundary (WO-040-CORR §5/§6/§16).
 #
 # A runner takes (audio_path, audio_bytes, sample_rate, run_phase, config) and
@@ -528,17 +665,20 @@ def _run_faster_whisper(
     run_phase: str,
     config: CandidateConfig,
 ) -> str:
-    """Benchmark-only faster_whisper runner (never registered in production)."""
+    """Single-shot benchmark-only faster_whisper runner (never registered in production).
+
+    This is the legacy single-shot compat path.  It creates a
+    ``FasterWhisperSession``, initializes it, transcribes once, and closes it.
+    The genuine benchmark path (``execute_benchmark_lifecycle``) uses a
+    reusable session so the model is initialized exactly once across cold+warm
+    inputs (WO-040-CORR-02 §5).
+    """
+    session = FasterWhisperSession(config)
     try:
-        from faster_whisper import WhisperModel  # noqa: N813
-    except Exception as exc:  # noqa: BLE001
-        raise CandidateUnavailable(f"faster_whisper runtime not installed: {exc}") from exc
-    model_path = config.model_path
-    if not model_path:
-        raise CandidateUnavailable("faster_whisper model not present locally")
-    model = WhisperModel(model_path, device=config.device)
-    segments, _info = model.transcribe(audio_path, language=config.language, beam_size=5)
-    return "".join(seg.text for seg in segments).strip()
+        session.initialize()
+        return session.transcribe(audio_path, audio_bytes, sample_rate)
+    finally:
+        session.close()
 
 
 def _run_vosk(
@@ -548,21 +688,17 @@ def _run_vosk(
     run_phase: str,
     config: CandidateConfig,
 ) -> str:
-    """Benchmark-only vosk runner (never registered in production)."""
+    """Single-shot benchmark-only vosk runner (never registered in production).
+
+    Legacy single-shot compat path (see ``_run_faster_whisper``); the genuine
+    benchmark path reuses a ``VoskSession`` across warm inputs (WO-040-CORR-02 §6).
+    """
+    session = VoskSession(config)
     try:
-        from vosk import Model, KaldiRecognizer, SetLogLevel  # noqa: N813
-    except Exception as exc:  # noqa: BLE001
-        raise CandidateUnavailable(f"vosk runtime not installed: {exc}") from exc
-    model_path = config.model_path
-    if not model_path:
-        raise CandidateUnavailable("vosk model not present locally")
-    SetLogLevel(-1)
-    model = Model(model_path)
-    rec = KaldiRecognizer(model, sample_rate)
-    rec.AcceptWaveform(audio_bytes)
-    result = rec.FinalResult()
-    import json as _json
-    return (_json.loads(result).get("text", "") or "").strip()
+        session.initialize()
+        return session.transcribe(audio_path, audio_bytes, sample_rate)
+    finally:
+        session.close()
 
 
 def get_candidate_runner(candidate: str) -> Callable[..., str]:
@@ -603,8 +739,17 @@ def _run_one(
     config: CandidateConfig,
     timeout_seconds: float,
     run_phase: str,
+    session: CandidateSession | None = None,
+    init_time: float | None = None,
 ) -> CandidateResult:
-    """Execute one candidate on one input with timing, failure and timeout accounting."""
+    """Execute one candidate on one input with timing, failure and timeout accounting.
+
+    When ``session`` is provided, inference runs through the reused
+    ``session.transcribe`` (WO-040-CORR-02).  ``init_time`` is the measured
+    cold-start initialization time; when non-None it is added to the measured
+    inference time so cold latency = initialization + inference, while warm
+    latency (``init_time=None``) is inference only (WO-040-CORR-02 §7).
+    """
     wall_t0 = time.perf_counter()
     cpu_t0 = time.process_time()
     ram_before = _current_rss_mb()
@@ -614,7 +759,10 @@ def _run_one(
     hypothesis = ""
     try:
         with timeout_guard(timeout_seconds):
-            hypothesis = runner(audio_path, audio_bytes, sample_rate, run_phase, config)
+            if session is not None:
+                hypothesis = session.transcribe(audio_path, audio_bytes, sample_rate)
+            else:
+                hypothesis = runner(audio_path, audio_bytes, sample_rate, run_phase, config)
     except BenchmarkTimeoutError as exc:
         status = STATUS_TIMEOUT
         timeout = True
@@ -630,9 +778,11 @@ def _run_one(
         cpu_t1 = time.process_time()
         ram_after = _current_rss_mb()
 
-    latency = wall_t1 - wall_t0
+    inference_time = wall_t1 - wall_t0
     cpu_time = cpu_t1 - cpu_t0
-    cpu_usage = (cpu_time / latency * 100.0) if latency > 0 else None
+    # Cold latency includes initialization; warm latency is inference only.
+    latency = (init_time + inference_time) if init_time is not None else inference_time
+    cpu_usage = (cpu_time / inference_time * 100.0) if inference_time > 0 else None
     ram_usage = (
         max(ram_before, ram_after)
         if (ram_before is not None and ram_after is not None)
@@ -777,6 +927,165 @@ def execute_benchmark(
             timeout_seconds=timeout_seconds,
             run_phase=run_phase,
         ))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Genuine COLD/WARM lifecycle benchmark (WO-040-CORR-02 §4/§7/§8/§10/§12/§13).
+# ---------------------------------------------------------------------------
+def _build_result(
+    audio_id: str,
+    candidate: str,
+    audio_duration_seconds: float | None,
+    status: str,
+    hypothesis: str = "",
+    reference: str = "",
+    callsigns_total: int = 0,
+    callsigns_correct: int = 0,
+    wer: float | None = None,
+    cer: float | None = None,
+    callsign_accuracy: float | None = None,
+    processing_time_seconds: float | None = None,
+    latency_seconds: float | None = None,
+    rtf: float | None = None,
+    cpu_usage: float | None = None,
+    ram_usage: float | None = None,
+    gpu_usage: str = "N/A",
+    vram_usage: str = "N/A",
+    error: str = "",
+    timeout: bool = False,
+    run_phase: str = PHASE_WARM,
+) -> CandidateResult:
+    """Construct a CandidateResult with documented defaults for special states."""
+    return CandidateResult(
+        audio_id=audio_id,
+        candidate=candidate,
+        audio_duration_seconds=audio_duration_seconds,
+        status=status,
+        hypothesis=hypothesis,
+        reference=reference,
+        callsigns_total=callsigns_total,
+        callsigns_correct=callsigns_correct,
+        wer=wer,
+        cer=cer,
+        callsign_accuracy=callsign_accuracy,
+        processing_time_seconds=processing_time_seconds,
+        latency_seconds=latency_seconds,
+        rtf=rtf,
+        cpu_usage=cpu_usage,
+        ram_usage=ram_usage,
+        gpu_usage=gpu_usage,
+        vram_usage=vram_usage,
+        error=error,
+        timeout=timeout,
+        run_phase=run_phase,
+    )
+
+
+def execute_benchmark_lifecycle(
+    manifest_rows: list[dict[str, Any]],
+    candidate: str,
+    config: CandidateConfig | None = None,
+    timeout_seconds: float = 120.0,
+    session: CandidateSession | None = None,
+    session_factory: Callable[[], CandidateSession] | None = None,
+) -> list[CandidateResult]:
+    """Run the benchmark for one candidate using a genuine COLD/WARM lifecycle.
+
+    Lifecycle (WO-040-CORR-02 §4/§10):
+
+        create session
+          -> initialize()          (COLD: runtime/model init, once)
+          -> transcribe #1         (COLD: latency = init + inference)
+          -> transcribe #2..N      (WARM: latency = inference only)
+          -> close()
+
+    The session is created and initialized exactly once and reused for every
+    warm inference; the model is never reconstructed per warm input.  The first
+    manifest row is executed as COLD and the remaining rows as WARM.  A failure
+    during initialization is recorded as a failure of the cold phase; a failure
+    or timeout during warm inference is recorded on that warm record and does
+    not tear down or recreate the session (WO-040-CORR-02 §12).  An absent
+    candidate runtime/model remains an explicit NOT_AVAILABLE (WO-040-CORR-02 §13).
+    """
+    if candidate not in CANDIDATES:
+        raise ValueError(f"candidate {candidate!r} not in {CANDIDATES}")
+    if config is None:
+        config = get_candidate_config(candidate)
+
+    # Create the session once (only needed when the candidate is available).
+    init_time: float | None = None
+    init_error: str | None = None
+    if config.available:
+        if session is None:
+            factory = session_factory or (lambda: create_candidate_session(candidate, config))
+            session = factory()
+        # Initialize once (COLD).  A failure here is a failure of the cold phase.
+        try:
+            init_time = session.initialize()
+        except Exception as exc:  # noqa: BLE001
+            init_error = f"{type(exc).__name__}: {exc}"
+
+    results: list[CandidateResult] = []
+    for i, row in enumerate(manifest_rows):
+        phase = PHASE_COLD if i == 0 else PHASE_WARM
+        audio_id = row.get("audio_id", "")
+        audio_path = row.get("wav_path", "")
+        reference = row.get("ground_truth", "") or ""
+        callsigns = _parse_callsigns(row.get("callsigns_present", ""))
+
+        # Input contract: load + verify the WAV master read-only (WO-040-CORR §6).
+        try:
+            audio_bytes, sample_rate, _channels, _sampwidth, audio_duration = _load_wav(audio_path)
+        except Exception as exc:  # noqa: BLE001 - unreadable input -> failure, kept in denominator
+            results.append(_build_result(
+                audio_id=audio_id, candidate=candidate,
+                audio_duration_seconds=None, status=STATUS_FAILURE,
+                reference=reference, callsigns_total=len(callsigns),
+                error=f"WAV unreadable: {exc}", run_phase=phase,
+            ))
+            continue
+
+        # Candidate unavailable -> explicit NOT_AVAILABLE (WO-040-CORR §16).
+        if not config.available:
+            results.append(_build_result(
+                audio_id=audio_id, candidate=candidate,
+                audio_duration_seconds=audio_duration, status=STATUS_NOT_AVAILABLE,
+                reference=reference, callsigns_total=len(callsigns),
+                error=config.availability_reason or "candidate unavailable",
+                run_phase=phase,
+            ))
+            continue
+
+        # Initialization failed -> no usable session; every record is a failure.
+        if init_error is not None:
+            results.append(_build_result(
+                audio_id=audio_id, candidate=candidate,
+                audio_duration_seconds=audio_duration, status=STATUS_FAILURE,
+                reference=reference, callsigns_total=len(callsigns),
+                error=init_error, run_phase=phase,
+            ))
+            continue
+
+        # Cold latency includes initialization; warm latency is inference only.
+        cold_init = init_time if phase == PHASE_COLD else None
+        results.append(_run_one(
+            audio_id=audio_id, candidate=candidate, audio_path=audio_path,
+            audio_bytes=audio_bytes, sample_rate=sample_rate,
+            audio_duration=audio_duration, reference=reference, callsigns=callsigns,
+            runner=get_candidate_runner(candidate), config=config,
+            timeout_seconds=timeout_seconds, run_phase=phase,
+            session=session, init_time=cold_init,
+        ))
+
+    # Session cleanup (only if required).
+    if session is not None:
+        close_fn = getattr(session, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:  # noqa: BLE001 - cleanup must not mask results
+                pass
     return results
 
 
@@ -960,12 +1269,11 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--roots", nargs="*", default=DEFAULT_WAV_ROOTS)
     m.add_argument("--out", default="dataset_manifest.csv")
 
-    r = sub.add_parser("run", help="execute the benchmark for one candidate")
+    r = sub.add_parser("run", help="execute the benchmark for one candidate (cold+warm lifecycle)")
     r.add_argument("--candidate", required=True, choices=CANDIDATES)
     r.add_argument("--manifest", default="dataset_manifest.csv")
     r.add_argument("--out", default="results.csv")
     r.add_argument("--timeout", type=float, default=120.0)
-    r.add_argument("--phase", choices=[PHASE_COLD, PHASE_WARM], default=PHASE_WARM)
     r.add_argument("--language", default=None)
     r.add_argument("--device", default=None)
 
@@ -1003,12 +1311,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         rows = load_manifest(args.manifest)
         config = get_candidate_config(args.candidate, language=args.language, device=args.device)
-        results = execute_benchmark(
+        results = execute_benchmark_lifecycle(
             rows,
             args.candidate,
             config=config,
             timeout_seconds=args.timeout,
-            run_phase=args.phase,
         )
         write_results_csv(results, args.out)
         agg = aggregate_results(results)

@@ -1,8 +1,8 @@
-"""WO-040 / WO-040-CORR — Benchmark-specific validation tests (§20/§21).
+"""WO-040 / WO-040-CORR / WO-040-CORR-02 — Benchmark-specific validation tests (§20/§21).
 
 These tests validate the benchmark harness (``run_benchmark.py``) without
 requiring any engine runtime or model, so they are offline and deterministic.
-Fake runners are used where a real engine is absent; a fake runner is never
+Fake runners/sessions are used where a real engine is absent; a fake is never
 treated as real benchmark evidence.
 
 They verify:
@@ -14,7 +14,7 @@ They verify:
     * metric calculation (WER / CER / callsign accuracy on known pairs);
     * latency / RTF / CPU / RAM / GPU / VRAM measurement;
     * failure / timeout / NOT_AVAILABLE accounting and denominator logic;
-    * cold / warm distinction;
+    * cold / warm distinction (WO-040-CORR-02 genuine lifecycle);
     * aggregation denominator rules;
     * results CSV LF output and stable columns;
     * candidate restriction;
@@ -22,7 +22,7 @@ They verify:
     * offline execution (no network dependency in the harness).
 
 Author: Tactical Core Engineering Team
-Version: 1.1
+Version: 1.2
 """
 
 from __future__ import annotations
@@ -100,6 +100,58 @@ def _fake_failure(audio_path, audio_bytes, sample_rate, run_phase, config) -> st
 def _fake_timeout(audio_path, audio_bytes, sample_rate, run_phase, config) -> str:
     time.sleep(5)
     return "never returned"
+
+
+class _FakeSession(rb.CandidateSession):
+    """Deterministic fake CandidateSession for lifecycle tests (WO-040-CORR-02 §15).
+
+    Counts initialize/transcribe calls so tests can prove genuine cold/warm
+    behavior: the candidate is initialized exactly once and the same session is
+    reused for every warm inference.  A fake is test infrastructure only and is
+    never treated as real benchmark evidence.
+    """
+
+    def __init__(
+        self,
+        transcript: str = "alpha one bravo",
+        init_delay: float = 0.02,
+        init_error: Exception | None = None,
+        transcribe_sleep: float = 0.0,
+        warm_transcribe_sleep: float = 0.0,
+        transcribe_error_on: int | None = None,
+        transcribe_error: Exception | None = None,
+    ):
+        self.transcript = transcript
+        self.init_delay = init_delay
+        self.init_error = init_error
+        self.transcribe_sleep = transcribe_sleep
+        self.warm_transcribe_sleep = warm_transcribe_sleep
+        self.transcribe_error_on = transcribe_error_on
+        self.transcribe_error = transcribe_error
+        self.initialize_count = 0
+        self.transcribe_count = 0
+        self.closed = False
+
+    def initialize(self) -> float:
+        self.initialize_count += 1
+        time.sleep(self.init_delay)
+        if self.init_error:
+            raise self.init_error
+        return self.init_delay
+
+    def transcribe(self, audio_path, audio_bytes, sample_rate) -> str:
+        self.transcribe_count += 1
+        if self.transcribe_error_on is not None and self.transcribe_count == self.transcribe_error_on:
+            if self.transcribe_error:
+                raise self.transcribe_error
+        if self.transcribe_count > 1:
+            time.sleep(self.warm_transcribe_sleep)
+        else:
+            time.sleep(self.transcribe_sleep)
+        return self.transcript
+
+    def close(self) -> None:
+        self.closed = True
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +429,174 @@ def test_cold_warm_distinction(tmp_path):
                                 config=_available_config(), run_phase=rb.PHASE_WARM)
     assert cold[0].run_phase == rb.PHASE_COLD
     assert warm[0].run_phase == rb.PHASE_WARM
+
+
+# ---------------------------------------------------------------------------
+# Genuine COLD/WARM lifecycle (WO-040-CORR-02 §14/§16).
+# ---------------------------------------------------------------------------
+def test_cold_warm_lifecycle_initializes_once(tmp_path):
+    """The lifecycle must initialize the candidate exactly once and reuse it for warm.
+
+    This is the real proof required by WO-040-CORR-02 §14: a test that only
+    checks ``run_phase`` labels is insufficient.  Here ``initialize_count == 1``
+    and ``transcribe_count == 3`` (cold + two warm) on the SAME session object.
+    """
+    wav = _make_wav(str(tmp_path / "l1.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha one bravo", callsigns="alpha one, bravo"),
+        _manifest_row("w1", wav, ground_truth="alpha one bravo", callsigns="alpha one, bravo"),
+        _manifest_row("w2", wav, ground_truth="alpha one bravo", callsigns="alpha one, bravo"),
+    ]
+    s = _FakeSession()
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    assert s.initialize_count == 1, "candidate must be initialized exactly once"
+    assert s.transcribe_count == 3, "the same initialized session must be reused for every inference"
+    assert [r.run_phase for r in results] == [rb.PHASE_COLD, rb.PHASE_WARM, rb.PHASE_WARM]
+    assert all(r.status == rb.STATUS_SUCCESS for r in results)
+    assert s.closed is True, "session must be closed after the lifecycle"
+
+
+def test_cold_warm_latency_boundaries(tmp_path):
+    """Cold latency includes initialization; warm latency is inference only (WO-040-CORR-02 §7)."""
+    wav = _make_wav(str(tmp_path / "l2.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    s = _FakeSession(init_delay=0.05, transcribe_sleep=0.01, warm_transcribe_sleep=0.01)
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    cold, warm = results
+    assert cold.latency_seconds is not None
+    assert warm.latency_seconds is not None
+    # Cold latency = init(0.05) + inference(~0.01), so it must be >= the init delay.
+    assert cold.latency_seconds >= 0.05
+    # Warm latency = inference only, so it must be < the init delay.
+    assert warm.latency_seconds < 0.05
+    assert cold.run_phase == rb.PHASE_COLD
+    assert warm.run_phase == rb.PHASE_WARM
+
+
+def test_cold_warm_rtf_use_respective_durations(tmp_path):
+    """Cold and warm RTF are computed from their respective measured durations (WO-040-CORR-02 §8)."""
+    wav = _make_wav(str(tmp_path / "l3.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    s = _FakeSession(init_delay=0.05, transcribe_sleep=0.01, warm_transcribe_sleep=0.01)
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    cold, warm = results
+    assert cold.rtf is not None and warm.rtf is not None
+    assert cold.latency_seconds is not None and warm.latency_seconds is not None
+    assert cold.audio_duration_seconds is not None and warm.audio_duration_seconds is not None
+    duration = cold.audio_duration_seconds
+    assert cold.rtf == pytest.approx(cold.latency_seconds / duration, rel=1e-6)
+    assert warm.rtf == pytest.approx(warm.latency_seconds / duration, rel=1e-6)
+    assert cold.rtf > warm.rtf, "cold RTF must include initialization time"
+
+
+def test_initialization_failure_is_failure(tmp_path):
+    """A failure during initialization is a failure of the cold phase (WO-040-CORR-02 §12)."""
+    wav = _make_wav(str(tmp_path / "l4.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    s = _FakeSession(init_error=RuntimeError("init boom"))
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    assert all(r.status == rb.STATUS_FAILURE for r in results)
+    assert "init boom" in results[0].error
+    assert results[0].run_phase == rb.PHASE_COLD
+    assert results[1].run_phase == rb.PHASE_WARM
+
+
+def test_warm_inference_failure_is_failure(tmp_path):
+    """A warm inference failure remains a failure and does not recreate the session (WO-040-CORR-02 §12)."""
+    wav = _make_wav(str(tmp_path / "l5.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    # Fail on the 2nd transcribe (warm); the 1st (cold) succeeds.
+    s = _FakeSession(transcribe_error_on=2, transcribe_error=RuntimeError("warm boom"))
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    assert results[0].status == rb.STATUS_SUCCESS
+    assert results[1].status == rb.STATUS_FAILURE
+    assert "warm boom" in results[1].error
+    assert results[1].run_phase == rb.PHASE_WARM
+    assert s.initialize_count == 1, "the session must not be recreated after a warm failure"
+
+
+def test_warm_timeout_remains_timeout(tmp_path):
+    """A warm timeout is TIMEOUT and does not tear down/recreate the session (WO-040-CORR-02 §12)."""
+    wav = _make_wav(str(tmp_path / "l6.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    s = _FakeSession(warm_transcribe_sleep=0.5)
+    results = rb.execute_benchmark_lifecycle(
+        rows, "faster_whisper", config=_available_config(), session=s, timeout_seconds=0.1,
+    )
+    assert results[0].status == rb.STATUS_SUCCESS
+    assert results[1].status == rb.STATUS_TIMEOUT
+    assert results[1].timeout is True
+    assert results[1].run_phase == rb.PHASE_WARM
+    assert s.initialize_count == 1, "the session must not be recreated after a warm timeout"
+
+
+def test_unavailable_candidate_not_available_in_lifecycle(tmp_path):
+    """An unavailable candidate stays NOT_AVAILABLE in the lifecycle (WO-040-CORR-02 §13)."""
+    wav = _make_wav(str(tmp_path / "l7.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha", callsigns="alpha"),
+        _manifest_row("w", wav, ground_truth="alpha", callsigns="alpha"),
+    ]
+    cfg = _available_config()
+    cfg.available = False
+    cfg.availability_reason = "runtime not installed"
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=cfg)
+    assert all(r.status == rb.STATUS_NOT_AVAILABLE for r in results)
+    assert "runtime not installed" in results[0].error
+    assert results[0].run_phase == rb.PHASE_COLD
+    assert results[1].run_phase == rb.PHASE_WARM
+
+
+def test_aggregate_handles_cold_warm_records(tmp_path):
+    """Aggregation must handle a mixed cold/warm record set (WO-040-CORR-02 §16)."""
+    wav = _make_wav(str(tmp_path / "l8.wav"))
+    rows = [
+        _manifest_row("c", wav, ground_truth="alpha one bravo", callsigns="alpha one, bravo"),
+        _manifest_row("w1", wav, ground_truth="alpha one bravo", callsigns="alpha one, bravo"),
+    ]
+    s = _FakeSession()
+    results = rb.execute_benchmark_lifecycle(rows, "faster_whisper", config=_available_config(), session=s)
+    agg = rb.aggregate_results(results)
+    assert agg["total_inputs"] == 2
+    assert agg["successful_inputs"] == 2
+    assert agg["failed_inputs"] == 0
+    assert agg["timed_out_inputs"] == 0
+    assert agg["successful_inputs"] + agg["failed_inputs"] + agg["timed_out_inputs"] == agg["total_inputs"]
+    assert agg["mean_latency"] is not None and agg["mean_latency"] >= 0.0
+    assert agg["mean_rtf"] is not None and agg["mean_rtf"] >= 0.0
+
+
+def test_lifecycle_rejects_unknown_candidate():
+    """The lifecycle must refuse candidates outside {faster_whisper, vosk}."""
+    with pytest.raises(ValueError):
+        rb.execute_benchmark_lifecycle([], "whisper")
+
+
+def test_session_factory_creates_lifecycle_objects():
+    """The session factory returns a session with the documented lifecycle methods."""
+    cfg = _available_config()
+    for cand in rb.CANDIDATES:
+        sess = rb.create_candidate_session(cand, cfg)
+        assert callable(sess.initialize)
+        assert callable(sess.transcribe)
+        assert callable(sess.close)
+    with pytest.raises(ValueError):
+        rb.create_candidate_session("whisper", cfg)
 
 
 # ---------------------------------------------------------------------------
