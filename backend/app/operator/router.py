@@ -24,6 +24,7 @@ from app.operator.service import (
     NotFoundError,
     OperatorService,
     ReadDependencyUnavailableError,
+    _normalize_severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,14 +75,18 @@ def list_events(
     to_time: Optional[str] = Query(default=None),
     limit: Optional[int] = Query(default=None),
     cursor: Optional[str] = Query(default=None),
+    severity: Optional[str] = Query(default=None),
 ) -> JSONResponse:
     """GET /api/v1/operator/events — cursor-paginated, filterable event feed.
 
     Query parameters:
       source, event_type, from_time, to_time, limit (bounded to [1, 200]),
-      cursor (opaque keyset continuation).
+      cursor (opaque keyset continuation), severity (WO-037-06; one of
+      INFO / WARNING / THREAT / CRITICAL / UNCLASSIFIED).
 
-    ``severity`` filtering is DEFERRED (not implemented in WO-037-02).
+    ``severity`` filters the returned page by the derived baseline
+    classification (computed on demand, never persisted). It is a
+    consumer-side view filter; it never mutates event data.
     """
     service: OperatorService = request.app.state.operator_service
     result = service.list_events(
@@ -91,6 +96,7 @@ def list_events(
         to_time=_parse_time(to_time, "to_time"),
         limit=_parse_limit(limit),
         cursor=_parse_cursor(cursor),
+        severity=severity,
     )
     return JSONResponse(result)
 
@@ -126,6 +132,7 @@ async def events_stream(
     request: Request,
     limit: Optional[int] = Query(default=None),
     stream_ticks: Optional[int] = Query(default=None),
+    severity: Optional[str] = Query(default=None),
 ) -> StreamingResponse:
     """GET /api/v1/operator/events/stream — best-effort SSE event stream.
 
@@ -155,6 +162,12 @@ async def events_stream(
     SSE stream; the authoritative filtered view remains the REST
     ``GET /api/v1/operator/events`` endpoint.
 
+    ``severity`` (optional, WO-037-06) filters the emitted frames by the
+    derived baseline classification (computed on demand, never persisted). It
+    is a consumer-side view filter applied between the authoritative read and
+    emission; it never mutates durable state and never redesigns the SSE
+    contract. When omitted, every event is emitted (backwards compatible).
+
     Read-only: this endpoint only reads the authoritative repository. It never
     writes, never dispatches, never retries, never modifies checkpoint or
     projection state, and never creates a second event store.
@@ -172,6 +185,11 @@ async def events_stream(
         if not isinstance(stream_ticks, int) or isinstance(stream_ticks, bool) or stream_ticks < 0:
             raise InvalidRequestError("stream_ticks must be a non-negative integer")
         ticks = stream_ticks
+
+    # Validate/normalise the optional severity filter BEFORE any stream byte is
+    # emitted, so an invalid severity maps to HTTP 400 (the status code cannot
+    # be changed after the first streamed byte).
+    severity = _normalize_severity(severity) if severity is not None else None
 
     # Last-Event-ID: client resume cursor (integer durable seq). Not durable.
     raw_last = request.headers.get("last-event-id")
@@ -196,11 +214,13 @@ async def events_stream(
             if cursor is None:
                 max_seq = await asyncio.to_thread(service.max_durable_seq)
                 snapshot_start = max(0, max_seq - page_limit)
-                for item in await asyncio.to_thread(
+                snapshot_items = await asyncio.to_thread(
                     service.events_after_seq_bounded, snapshot_start, page_limit
-                ):
+                )
+                for item in snapshot_items:
                     cursor = item["seq"]
-                    yield _sse_frame(cursor, item)
+                    if severity is None or item.get("event", {}).get("severity") == severity:
+                        yield _sse_frame(cursor, item)
                 if cursor is None:
                     cursor = max_seq
 
@@ -226,7 +246,8 @@ async def events_stream(
                         break
                     for item in items:
                         cursor = item["seq"]
-                        yield _sse_frame(cursor, item)
+                        if severity is None or item.get("event", {}).get("severity") == severity:
+                            yield _sse_frame(cursor, item)
                 # Keepalive comment frame keeps the connection alive and lets
                 # a dropped client be detected. Standard SSE; no durable state.
                 yield ": keepalive\n\n"

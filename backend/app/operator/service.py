@@ -40,6 +40,10 @@ from app.event.event import Event
 from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
+from app.operator.severity import (
+    Severity,
+    classify,
+)
 
 
 class OperatorError(Exception):
@@ -76,11 +80,36 @@ class ReadDependencyUnavailableError(OperatorError):
 
 
 def _event_to_dict(event: Event) -> Dict[str, Any]:
-    """Serialize one canonical Event deterministically (ISO-8601 UTC)."""
+    """Serialize one canonical Event deterministically (ISO-8601 UTC).
+
+    The derived baseline ``severity`` (WO-037-06) is computed on demand from
+    the event's deterministic facts (event_type + source) and is a read-only,
+    consumer-side annotation. It is NEVER persisted, never written to the
+    event/schema/database, and cannot be altered by the operator.
+    """
     data = event.to_dict()
-    # ``to_dict`` already emits ISO-8601 strings for timestamp / created_at and
-    # a JSON-safe payload/metadata; surface event_status explicitly.
+    data["severity"] = classify(event).value
     return data
+
+
+def _normalize_severity(value: str) -> str:
+    """Validate/normalise a severity filter value to its canonical form.
+
+    Accepts any case/whitespace variant of one of the five baseline severities
+    (INFO / WARNING / THREAT / CRITICAL / UNCLASSIFIED). A value that is not a
+    valid baseline severity is a client error -> 400.
+
+    Returns the canonical uppercase value.
+    """
+    if value is None:
+        raise InvalidRequestError("severity must not be null")
+    normalized = str(value).strip().upper()
+    valid = {s.value for s in Severity}
+    if normalized not in valid:
+        raise InvalidRequestError(
+            f"severity must be one of {', '.join(sorted(valid))}"
+        )
+    return normalized
 
 
 class OperatorService:
@@ -113,6 +142,7 @@ class OperatorService:
         to_time: Optional[datetime] = None,
         limit: int = 50,
         cursor: Optional[int] = None,
+        severity: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a deterministic, cursor-paginated event feed page.
 
@@ -120,9 +150,15 @@ class OperatorService:
         ``query_events`` (WO-037-01 keyset pagination). The service only
         validates/normalises request parameters and shapes the response.
 
+        ``severity`` (optional, WO-037-06) filters the returned page by the
+        derived baseline classification. Because baseline severity is computed
+        on demand and NEVER durably persisted, this is a consumer-side view
+        filter applied to the already-fetched page (the authoritative cursor
+        pagination is unchanged). It never mutates event data.
+
         Raises:
             InvalidRequestError: malformed cursor / invalid limit / inverted
-                time range (HTTP 400).
+                time range / invalid severity (HTTP 400).
             ReadDependencyUnavailableError: authoritative read dependency
                 unavailable (HTTP 503).
         """
@@ -134,6 +170,9 @@ class OperatorService:
             limit=limit,
             cursor=cursor,
         )
+        if severity is not None:
+            severity = _normalize_severity(severity)
+            events = [e for e in events if classify(e).value == severity]
         return {
             "events": [_event_to_dict(e) for e in events],
             "next_cursor": next_cursor,
