@@ -105,6 +105,17 @@ def _radio_identity(raw: dict[str, Any]) -> Optional[str]:
     # Radio has no native message id.  Deterministic fallback over the explicit
     # identity key `frequency + callsign`.  signal_strength / modulation /
     # source / timestamp are reception/transport metadata and are excluded.
+    #
+    # WO-038: multicast audio-derived radio events carry a deterministic
+    # `content_id` (the stable content identifier of the received audio
+    # segment).  When present it is the preferred identity material so two
+    # deliveries of the same audio content map to the same canonical event_id
+    # (de-duplication) while distinct content stays distinct.  When absent
+    # (legacy RadioPayloadNormalizer raw dicts) the existing frequency+callsign
+    # fallback is used unchanged (backward compatible).
+    content_id = raw.get("content_id")
+    if content_id is not None:
+        return f"radio|content|{_canonicalize(content_id)}"
     frequency = raw.get("frequency")
     callsign = raw.get("callsign")
     if frequency is None or callsign is None:

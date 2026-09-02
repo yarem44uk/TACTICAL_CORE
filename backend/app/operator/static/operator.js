@@ -121,7 +121,40 @@ function loadHealth() {
 
 var evState = { cursor: null, hasPrev: false, hasNext: false };
 
+/* WO-038 — radio/audio transcript event detection + rendering.  Appended only;
+   existing event rendering is left untouched for non-radio events. */
+function isRadioEvent(ev) {
+  var src = (ev.source || "").toLowerCase();
+  var hasTranscript = ev.payload && typeof ev.payload.transcript === "string";
+  return src === "radio" || src.indexOf("radio") !== -1 || hasTranscript;
+}
+
+function radioEventRow(ev) {
+  var payload = ev.payload || {};
+  var transcript = payload.transcript || "";
+  var callsigns = payload.detected_callsigns || [];
+  var callsign = callsigns.length ? callsigns.join(", ") : (payload.callsign || "");
+  return (
+    '<div class="feed-item" data-eid="' + escapeHtml(ev.event_id) + '">' +
+      '<div class="row-1"><span class="radio-label">RADIO</span>' +
+        '<span class="etype">' + escapeHtml(ev.event_type) + "</span>" +
+        '<span class="eid">' + escapeHtml(ev.event_id) + "</span>" +
+        '<span class="etime">' + fmtTs(ev.timestamp) + "</span></div>" +
+      '<div class="radio-transcript">' + escapeHtml(transcript) + "</div>" +
+      (callsign
+        ? '<div class="radio-callsign">CALLSIGN: ' + escapeHtml(callsign) + "</div>"
+        : "") +
+      '<div class="radio-meta">source: ' + escapeHtml(ev.source) +
+        " &middot; seq: " + escapeHtml(String(ev.seq !== undefined ? ev.seq : "—")) +
+        "</div>" +
+    "</div>"
+  );
+}
+
 function eventRow(ev) {
+  if (isRadioEvent(ev)) {
+    return radioEventRow(ev);
+  }
   return (
     '<div class="feed-item" data-eid="' + escapeHtml(ev.event_id) + '">' +
       '<div class="row-1"><span class="etype">' + escapeHtml(ev.event_type) + "</span>" +

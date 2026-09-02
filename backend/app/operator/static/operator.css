@@ -199,3 +199,33 @@ pre.json { background: var(--panel-2); padding: 12px; border-radius: 6px; overfl
 .auth-btn {
   white-space: nowrap;
 }
+
+
+/* WO-038 — multicast radio transcript event rendering (new classes only) */
+.radio-label {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  background: rgba(74,158,255,.15);
+  color: var(--accent);
+  margin-right: 8px;
+}
+.radio-transcript {
+  margin: 6px 0 2px;
+  color: var(--text);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.radio-callsign {
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+}
+.radio-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 2px;
+}
