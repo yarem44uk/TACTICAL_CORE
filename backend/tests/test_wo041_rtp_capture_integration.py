@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import os
+import socket
 import struct
 import subprocess
 import wave
@@ -37,7 +38,9 @@ from app.audio.alaw import alaw_to_pcm
 from app.audio.audio_config import AudioConfig
 from app.audio.recording_config import RecordingConfig
 from app.audio.recorder import TransmissionRecorder
+from app.audio.rtp import parse_rtp_packet
 from app.audio.rtp_capture import RtpCaptureReader
+from app.audio.rtp_stream import RtpDisposition, RtpStreamTracker
 from app.audio.wav_writer import write_wav_atomic
 
 # ---------------------------------------------------------------------------
@@ -331,3 +334,180 @@ def test_no_stt_engine_involved() -> None:
     assert not hasattr(_reader(), "transcriber")
     rec = TransmissionRecorder(_audio_config(), RecordingConfig(enabled=True, vad_enabled=True))
     assert not hasattr(rec, "transcriber")
+
+
+# ---------------------------------------------------------------------------
+# WO-041-CORR-01 — RTP edge-case hardening (F-01 / F-02 regression tests)
+# ---------------------------------------------------------------------------
+#
+# Deterministic synthetic captures below exercise the exact edge-case policy:
+#   INITIAL / IN_ORDER / GAP  -> accepted (emitted once)
+#   DUPLICATE                 -> rejected (never emitted twice)
+#   OUT_OF_ORDER              -> rejected (never merged into the payload)
+#   multiple SSRC             -> FAIL CLOSED (explicit ValueError, no merge)
+
+
+def _rtp_packet(seq: int, ssrc: int, payload_type: int = 8, ts: int | None = None) -> bytes:
+    """Build a minimal RFC 3550 RTP v2 datagram (PT=8, 160-byte payload)."""
+    if ts is None:
+        ts = seq * 160
+    payload = bytes([seq % 256]) * 160
+    return struct.pack(">BBHII", 0x80, payload_type, seq & 0xFFFF, ts, ssrc) + payload
+
+
+def _eth_frame(src_ip: str, dst_ip: str, sport: int, dport: int, rtp: bytes) -> bytes:
+    """Wrap an RTP datagram in Ethernet / IPv4 / UDP (as _filter_target expects)."""
+    eth = b"\x00" * 12 + struct.pack(">H", 0x0800)
+    total_len = 20 + 8 + len(rtp)
+    ip = struct.pack(
+        ">BBHHHBBH4s4s", 0x45, 0, total_len, 0, 0, 64, 17, 0,
+        socket.inet_aton(src_ip), socket.inet_aton(dst_ip),
+    )
+    udp = struct.pack(">HHHH", sport, dport, 8 + len(rtp), 0) + rtp
+    return eth + ip + udp
+
+
+def _pcapng_block(btype: int, body: bytes) -> bytes:
+    total = 12 + len(body)
+    return struct.pack("<II", btype, total) + body + struct.pack("<I", total)
+
+
+def _pcapng_shb() -> bytes:
+    return _pcapng_block(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))
+
+
+def _pcapng_idb() -> bytes:
+    return _pcapng_block(0x00000001, struct.pack("<HHI", 1, 0, 65535))
+
+
+def _pcapng_epb(frame: bytes, ts: int) -> bytes:
+    caplen = len(frame)
+    body = struct.pack(
+        "<IIIII", 0, (ts >> 32) & 0xFFFFFFFF, ts & 0xFFFFFFFF, caplen, caplen
+    )
+    body += frame
+    body += b"\x00" * ((4 - (len(body) % 4)) % 4)
+    return _pcapng_block(0x00000006, body)
+
+
+def _write_synthetic_capture(
+    tmp_path,
+    rtp_packets: list[bytes],
+    src_ip: str = "10.0.0.1",
+    dst_ip: str = "10.0.0.2",
+    sport: int = 5033,
+    dport: int = 5033,
+) -> str:
+    """Write a minimal pcapng carrying one target-flow RTP stream."""
+    frames = [_eth_frame(src_ip, dst_ip, sport, dport, p) for p in rtp_packets]
+    pcapng = _pcapng_shb() + _pcapng_idb()
+    pcapng += b"".join(_pcapng_epb(f, i) for i, f in enumerate(frames))
+    path = str(tmp_path / "synthetic_rtp.pcapng")
+    with open(path, "wb") as fh:
+        fh.write(pcapng)
+    return path
+
+
+def _synthetic_reader(pcap: str) -> RtpCaptureReader:
+    return RtpCaptureReader(pcap, udp_port=5033, payload_type=8)
+
+
+def test_out_of_order_packet_excluded_from_output(tmp_path) -> None:
+    """F-01: a late/out-of-order packet must not leak into the accepted payload."""
+    packets = [
+        _rtp_packet(100, ssrc=0x1111),
+        _rtp_packet(101, ssrc=0x1111),
+        _rtp_packet(99, ssrc=0x1111),
+        _rtp_packet(102, ssrc=0x1111),
+    ]
+    # Direct disposition proof: seq 99 is classified OUT_OF_ORDER (not a gap).
+    tracker = RtpStreamTracker(expected_payload_type=8)
+    results = [tracker.on_packet(parse_rtp_packet(p)) for p in packets]
+    assert results[2].disposition == RtpDisposition.OUT_OF_ORDER
+    assert results[2].disposition != RtpDisposition.DUPLICATE
+    assert tracker.stats.out_of_order == 1
+
+    pcap = _write_synthetic_capture(tmp_path, packets)
+    reader = _synthetic_reader(pcap)
+    stream = reader.read()
+
+    seqs = [p.sequence_number for p in stream.packets]
+    assert seqs == [100, 101, 102]
+    assert 99 not in seqs
+    assert stream.stats["out_of_order"] == 1
+
+    # 99 must not be decoded to PCM.
+    accepted_payload = b"".join(p.payload for p in stream.packets)
+    assert (bytes([99]) * 160) not in accepted_payload
+    pcm = reader.decode_pcm(stream)
+    assert len(pcm) == 3 * 160 * 2  # exactly 3 packets, no invented PCM
+
+    # 99 must not be emitted through the recording boundary (PCM frames).
+    frames = reader.iter_frames(stream)
+    assert all(f.sequence_number != 99 for f in frames)
+    assert len(frames) == 3
+
+
+def test_duplicate_packet_excluded_from_output(tmp_path) -> None:
+    """F-01/regression: a duplicate packet is never emitted twice."""
+    packets = [
+        _rtp_packet(100, ssrc=0x1111),
+        _rtp_packet(101, ssrc=0x1111),
+        _rtp_packet(101, ssrc=0x1111),
+        _rtp_packet(102, ssrc=0x1111),
+    ]
+    pcap = _write_synthetic_capture(tmp_path, packets)
+    reader = _synthetic_reader(pcap)
+    stream = reader.read()
+    seqs = [p.sequence_number for p in stream.packets]
+    assert seqs == [100, 101, 102]
+    assert seqs.count(101) == 1
+    assert stream.stats["duplicates"] == 1
+    pcm = reader.decode_pcm(stream)
+    assert len(pcm) == 3 * 160 * 2
+
+
+def test_gap_packet_accepted_missing_not_invented(tmp_path) -> None:
+    """F-01/regression: a gap emits the arriving packet, never invented samples."""
+    packets = [
+        _rtp_packet(100, ssrc=0x1111),
+        _rtp_packet(101, ssrc=0x1111),
+        _rtp_packet(105, ssrc=0x1111),
+    ]
+    pcap = _write_synthetic_capture(tmp_path, packets)
+    reader = _synthetic_reader(pcap)
+    stream = reader.read()
+    seqs = [p.sequence_number for p in stream.packets]
+    assert seqs == [100, 101, 105]
+    assert stream.stats["sequence_gaps"] == 1
+    assert stream.stats["packets_dropped"] == 3
+    # No invented PCM for the 3 missing packets (102, 103, 104).
+    pcm = reader.decode_pcm(stream)
+    assert len(pcm) == 3 * 160 * 2
+
+
+def test_multiple_ssrc_fails_closed(tmp_path) -> None:
+    """F-02: a capture reader must fail closed rather than merge SSRCs."""
+    packets = [
+        _rtp_packet(100, ssrc=0xAAAA),
+        _rtp_packet(101, ssrc=0xAAAA),
+        _rtp_packet(102, ssrc=0xBBBB),
+    ]
+    pcap = _write_synthetic_capture(tmp_path, packets)
+    reader = _synthetic_reader(pcap)
+    with pytest.raises(ValueError) as excinfo:
+        reader.read()
+    msg = str(excinfo.value)
+    assert "multiple SSRC" in msg
+    assert str(0xAAAA) in msg and str(0xBBBB) in msg
+
+
+def test_real_capture_single_ssrc_regression() -> None:
+    """F-02 regression: the real capture is a single-SSRC stream and must pass."""
+    reader = _reader()
+    stream = reader.read()
+    assert len({p.ssrc for p in stream.packets}) == 1
+    assert stream.ssrc == GOLDEN["ssrc"]
+    assert len(stream.packets) == GOLDEN["packet_count"]
+    for packet in stream.packets:
+        assert packet.payload_type == GOLDEN["payload_type"]

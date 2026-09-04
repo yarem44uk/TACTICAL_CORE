@@ -65,7 +65,8 @@ class CaptureStream:
         dest_port: The observed UDP destination port.
         payload_type: The observed RTP payload type (8 = G.711 A-law / PCMA).
         ssrc: The single observed synchronization source identifier.
-        packets: The accepted, non-duplicate RTP packets in sequence order.
+        packets: The accepted RTP packets in sequence order (initial / in-order
+            / gap only; duplicates and out-of-order packets are excluded).
         stats: Reconstruction statistics (gaps / duplicates / dropped / order).
         malformed: Number of target-flow datagrams that failed RTP validation.
         udp_datagrams: Total target-flow UDP datagrams inspected.
@@ -119,8 +120,9 @@ class RtpCaptureReader:
 
         Raises:
             FileNotFoundError: If the capture path does not exist.
-            ValueError: If the capture is malformed or the target stream cannot
-                be identified.
+            ValueError: If the capture is malformed, the target stream cannot
+                be identified, or multiple distinct SSRC values are observed
+                (a single capture reader must not silently combine streams).
         """
         with open(self._path, "rb") as fh:
             data = fh.read()
@@ -131,7 +133,7 @@ class RtpCaptureReader:
         if not packets:
             raise ValueError("capture contains no packet blocks")
 
-        target_udp, flow_meta, ts_resolution = _filter_target(
+        target_udp, flow_meta = _filter_target(
             packets, self._source_ip, self._dest_ip, self._udp_port
         )
         if not target_udp:
@@ -141,6 +143,7 @@ class RtpCaptureReader:
         # reconstruction / gap / duplicate detection.
         tracker = RtpStreamTracker(expected_payload_type=self._payload_type)
         accepted: list[RtpPacket] = []
+        seen_ssrcs: set[int] = set()
         malformed = 0
         for raw in target_udp:
             try:
@@ -148,9 +151,18 @@ class RtpCaptureReader:
                 validate_rtp_packet(
                     packet, expected_payload_type=self._payload_type
                 )
+                seen_ssrcs.add(packet.ssrc)
                 result = tracker.on_packet(packet)
-                # Duplicates are never emitted twice (WO-039-A §5).
-                if result.disposition != RtpDisposition.DUPLICATE:
+                # Emit PCM only for packets the stream policy accepts: the
+                # arriving packet for an initial / in-order / gap packet.
+                # Duplicates are never emitted twice (WO-039-A §5) and
+                # out-of-order (late) packets are never merged into the
+                # decoded payload (WO-041-CORR-01 F-01).
+                if result.disposition in (
+                    RtpDisposition.INITIAL,
+                    RtpDisposition.IN_ORDER,
+                    RtpDisposition.GAP,
+                ):
                     accepted.append(packet)
             except ValueError:
                 malformed += 1
@@ -160,16 +172,15 @@ class RtpCaptureReader:
                 "no valid RTP packets matched the target flow / payload type"
             )
 
+        # A capture reader configured for ONE RTP stream must not silently
+        # combine multiple SSRCs: fail closed (WO-041-CORR-01 F-02).
+        if len(seen_ssrcs) != 1:
+            raise ValueError(
+                f"multiple SSRC values observed: {sorted(seen_ssrcs)}"
+            )
+
         # Preserve sequence order (the tracker already recorded gaps/dups).
         accepted.sort(key=lambda p: p.sequence_number)
-
-        # Single-SSRC expectation for this stream.
-        ssrcs = {p.ssrc for p in accepted}
-        if len(ssrcs) != 1:
-            # Report the dominant SSRC but do not fail on a stream transition.
-            dominant = max(ssrcs, key=lambda s: sum(1 for p in accepted if p.ssrc == s))
-        else:
-            dominant = accepted[0].ssrc
 
         src_ip, dst_ip, sport, dport = flow_meta
         return CaptureStream(
@@ -178,7 +189,7 @@ class RtpCaptureReader:
             source_port=sport,
             dest_port=dport,
             payload_type=accepted[0].payload_type,
-            ssrc=dominant,
+            ssrc=accepted[0].ssrc,
             packets=tuple(accepted),
             stats=tracker.stats.as_dict(),
             malformed=malformed,
@@ -339,15 +350,14 @@ def _filter_target(
     source_ip: str | None,
     dest_ip: str | None,
     udp_port: int | None,
-) -> tuple[list[bytes], tuple[str, str, int, int], int]:
+) -> tuple[list[bytes], tuple[str, str, int, int]]:
     """Extract the target-flow UDP payloads (RTP datagrams) and flow metadata.
 
-    Returns ``(rtp_datagrams, (src_ip, dst_ip, sport, dport), tsresol)``.
+    Returns ``(rtp_datagrams, (src_ip, dst_ip, sport, dport))``.
     """
     out: list[bytes] = []
     flow_meta: tuple[str, str, int, int] | None = None
-    tsresol = _DEFAULT_TSRESOL
-    for ticks, resol, pkt in packets:
+    for _, _, pkt in packets:
         if len(pkt) < 14:
             continue
         eth_type = struct.unpack_from(">H", pkt, 12)[0]
@@ -375,8 +385,7 @@ def _filter_target(
             continue
         if flow_meta is None:
             flow_meta = (src, dst, sport, dport)
-            tsresol = resol
         out.append(udp[8:])
     if flow_meta is None:
         raise ValueError("no datagrams matched the target flow filter")
-    return out, flow_meta, tsresol
+    return out, flow_meta
