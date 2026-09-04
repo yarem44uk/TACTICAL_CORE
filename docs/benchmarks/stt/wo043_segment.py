@@ -252,7 +252,12 @@ def build_candidates(
     Pipeline (WO-043 §5): frame analysis -> energy/RMS -> activity threshold ->
     attack -> hangover/post-roll -> merge nearby fragments -> minimum duration ->
     (cap) maximum duration -> overlap prevention.
+
+    EOF clamp (WO-043-CORR-01 C1): every segment and activity bound is clamped to
+    the actual source duration, so a candidate that reaches EOF never carries a
+    ``segment_end`` beyond the real audio interval.
     """
+    source_duration = (len(mono) / rate) if rate else 0.0
     rms_frames = rms_frame_energy(mono, rate, params.frame_ms, params.hop_ms)
     active = detect_active(rms_frames, params.energy_threshold)
     runs = _active_runs(active, params.hop_ms)
@@ -335,12 +340,26 @@ def build_candidates(
     # Deterministic ordering by ascending segment_start (WO-043 §9).
     non_overlap.sort(key=lambda c: (c.segment_start, c.activity_start, c.index))
 
+    # EOF clamp (WO-043-CORR-01 C1): clamp every bound to the source duration so
+    # the manifest timing never exceeds the actual audio interval, and drop any
+    # degenerate (zero-length) segment that clamping would produce.
+    clamped: List[Candidate] = []
+    for c in non_overlap:
+        c.segment_start = max(0.0, c.segment_start)
+        c.segment_end = min(source_duration, c.segment_end)
+        c.activity_start = max(0.0, c.activity_start)
+        c.activity_end = min(source_duration, c.activity_end)
+        if c.activity_end < c.activity_start:
+            c.activity_end = c.activity_start
+        if c.segment_end > c.segment_start:
+            clamped.append(c)
+
     # Reassign contiguous deterministic IDs in ascending segment_start order
     # (WO-043 §9): the final numbering is 1..N with no gaps, stable across runs.
-    for i, c in enumerate(non_overlap):
+    for i, c in enumerate(clamped):
         c.index = i
 
-    return non_overlap
+    return clamped
 
 
 # ---------------------------------------------------------------------------
@@ -352,13 +371,19 @@ def write_wav_derived(
     out_path: str,
     start_sec: float,
     end_sec: float,
-) -> None:
+) -> Tuple[float, float]:
     """Write a derived WAV slice, preserving the source native format.
 
     The slice is [start_sec, end_sec] in seconds. The source is opened
     read-only. The derived file keeps the same sample rate, channel count, and
     sample width as the source (WO-043 §10). No resampling or normalisation is
     performed in-place; the derived file is a direct byte slice.
+
+    The slice bounds are resolved in the SAMPLE domain (WO-043-CORR-01 C1 §8):
+    ``start_frame``/``end_frame`` are the source of truth for the derived WAV,
+    and the returned ``(actual_start_sec, actual_end_sec)`` are computed back
+    from those frames, so the manifest timing always describes the exact audio
+    interval actually written (never an over-EOF theoretical bound).
     """
     with wave.open(source_path, "rb") as w:
         rate = w.getframerate()
@@ -367,10 +392,8 @@ def write_wav_derived(
         nframes = w.getnframes()
         start_frame = int(round(start_sec * rate))
         end_frame = int(round(end_sec * rate))
-        if end_frame > nframes:
-            end_frame = nframes
-        if start_frame < 0:
-            start_frame = 0
+        start_frame = max(0, start_frame)
+        end_frame = min(nframes, end_frame)
         if end_frame <= start_frame:
             raise ValueError(f"invalid slice: {start_sec}s -> {end_sec}s")
         w.setpos(start_frame)
@@ -381,6 +404,8 @@ def write_wav_derived(
         w.setsampwidth(sampwidth)
         w.setframerate(rate)
         w.writeframes(raw)
+
+    return start_frame / rate, end_frame / rate
 
 
 def sha256_file(path: str) -> str:
@@ -404,6 +429,93 @@ def write_manifest(path: str, rows: List[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# WO-042 canonical dataset manifest (WO-043-CORR-01 C2, Option B).
+#
+# The WO-043 segmentation manifest keeps the segmentation-specific forensic
+# evidence (segment/activity bounds, source_sha256, derived_sha256,
+# candidate_status).  WO-043-CORR-01 does NOT duplicate the dataset system: it
+# provides a *deterministic conversion* from the segmentation rows into the
+# WO-042 canonical dataset schema, so the WO-042 validator can consume the
+# output.  The segmentation evidence is never destroyed (WO-043-CORR-01 §12).
+# ---------------------------------------------------------------------------
+
+# Same stable column order as wo042_build_manifest.py / wo042_validate_dataset.py.
+WO042_MANIFEST_FIELDS = [
+    "audio_id",
+    "audio_path",
+    "sha256",
+    "source_type",
+    "real_transmission",
+    "capture_timestamp",
+    "duration_seconds",
+    "sample_rate",
+    "channels",
+    "sample_width_bits",
+    "codec",
+    "speaker_or_source",
+    "transcript",
+    "callsigns_present",
+    "ground_truth_verified",
+    "independent_verification",
+    "verification_method",
+    "provenance",
+    "notes",
+]
+
+
+def convert_to_wo042(seg_rows: List[dict], output_dir: str) -> List[dict]:
+    """Deterministically convert WO-043 segmentation rows into WO-042 canonical rows.
+
+    Every converted row stays a *candidate*: ``real_transmission=false``,
+    ``ground_truth_verified=false``, ``independent_verification=false``, empty
+    ``transcript`` and ``callsigns_present=[]``.  No value is invented for the
+    fields the segmentation does not know (``capture_timestamp``,
+    ``speaker_or_source``, ``verification_method``) — they are ``UNKNOWN``.
+    ``source_type`` is ``radio`` because the input to the segmentation tool is a
+    radio recording; it is NOT a claim that the content is real speech.
+    """
+    wo042_rows: List[dict] = []
+    for seg_row in seg_rows:
+        audio_id = seg_row.get("audio_id", "")
+        wo042_rows.append(
+            {
+                "audio_id": audio_id,
+                "audio_path": os.path.join(output_dir, f"{audio_id}.wav"),
+                "sha256": seg_row.get("derived_sha256", ""),
+                "source_type": "radio",
+                "real_transmission": "false",
+                "capture_timestamp": "UNKNOWN",
+                "duration_seconds": seg_row.get("duration_seconds", ""),
+                "sample_rate": seg_row.get("sample_rate", ""),
+                "channels": seg_row.get("channels", ""),
+                "sample_width_bits": seg_row.get("sample_width_bits", ""),
+                "codec": "PCM",
+                "speaker_or_source": "UNKNOWN",
+                "transcript": "",
+                "callsigns_present": "[]",
+                "ground_truth_verified": "false",
+                "independent_verification": "false",
+                "verification_method": "UNKNOWN",
+                "provenance": (
+                    "WO-043 segmentation candidate; pending manual verification"
+                ),
+                "notes": seg_row.get("notes", ""),
+            }
+        )
+    return wo042_rows
+
+
+def write_wo042_manifest(path: str, rows: List[dict]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=WO042_MANIFEST_FIELDS, lineterminator="\n"
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, "") for k in WO042_MANIFEST_FIELDS})
+
+
+# ---------------------------------------------------------------------------
 # CLI.
 # ---------------------------------------------------------------------------
 
@@ -420,6 +532,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="directory for derived WAV masters (default: alongside --manifest)")
     parser.add_argument("--manifest", default=None,
                         help="path for the segmentation manifest CSV")
+    parser.add_argument("--wo042-manifest", default=None,
+                        help="also emit a WO-042 canonical dataset manifest (deterministic "
+                             "conversion of the segmentation rows)")
     parser.add_argument("--list", action="store_true",
                         help="print a candidate summary table without writing files")
     parser.add_argument("--no-write", action="store_true",
@@ -462,23 +577,36 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"{_fmt(c.duration)}s  "
                   f"(activity {_fmt(c.activity_start)}s -> {_fmt(c.activity_end)}s)")
 
+    # Output directory: explicit --output-dir, or (when a manifest is requested
+    # and derived masters are wanted) alongside --manifest, matching the CLI
+    # contract documented on --output-dir.  This keeps `--manifest` alone from
+    # silently producing a header-only manifest (WO-043-CORR-01 C3 §17).
+    output_dir = args.output_dir
+    if output_dir is None and args.manifest and not args.no_write:
+        output_dir = os.path.dirname(os.path.abspath(args.manifest)) or "."
+
     rows: List[dict] = []
-    if not args.no_write and args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
+    if not args.no_write and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
         for c in candidates:
             audio_id = f"RADIO-{c.index + 1:04d}"
-            derived_path = os.path.join(args.output_dir, f"{audio_id}.wav")
-            write_wav_derived(args.input, derived_path, c.segment_start, c.segment_end)
+            derived_path = os.path.join(output_dir, f"{audio_id}.wav")
+            # The derived WAV is the source of truth for the interval actually
+            # written; the manifest timing uses the returned sample-domain
+            # bounds so it always describes the real audio interval (C1 §8).
+            actual_start, actual_end = write_wav_derived(
+                args.input, derived_path, c.segment_start, c.segment_end
+            )
             derived_sha = sha256_file(derived_path)
             rows.append({
                 "audio_id": audio_id,
                 "source_file": args.input,
                 "source_sha256": source_sha,
-                "segment_start_seconds": _fmt(c.segment_start),
-                "segment_end_seconds": _fmt(c.segment_end),
+                "segment_start_seconds": _fmt(actual_start),
+                "segment_end_seconds": _fmt(actual_end),
                 "activity_start_seconds": _fmt(c.activity_start),
                 "activity_end_seconds": _fmt(c.activity_end),
-                "duration_seconds": _fmt(c.duration),
+                "duration_seconds": _fmt(actual_end - actual_start),
                 "derived_sha256": derived_sha,
                 "sample_rate": int(rate),
                 "channels": channels,
@@ -499,6 +627,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.manifest and not args.no_write:
         write_manifest(args.manifest, rows)
         print(f"manifest: {args.manifest} ({len(rows)} rows)")
+
+    if args.wo042_manifest and not args.no_write and rows:
+        wo042_rows = convert_to_wo042(rows, output_dir or ".")
+        write_wo042_manifest(args.wo042_manifest, wo042_rows)
+        print(f"wo042 manifest: {args.wo042_manifest} ({len(wo042_rows)} rows)")
 
     return 0
 

@@ -4,6 +4,7 @@
 **Date:** 2026-09-04
 **Baseline:** `4cce0b91a3d3cad689714145e4da380e6d7650d1`
 **Status:** TOOLING COMPLETE — **DATASET GATE FAIL** (no real source present)
+**Corrective:** WO-043-CORR-01 applied (EOF clamp / WO-042 schema alignment / CLI test hardening)
 
 ---
 
@@ -21,6 +22,59 @@ system** — a finding already documented in the WO-042 report. Therefore no rea
 candidate transmissions were produced. Nothing was fabricated: no synthetic
 audio was relabelled as a real transmission, and the dataset gate remains
 **FAIL** (`accepted_real_transmissions = 0`).
+
+---
+
+## WO-043-CORR-01 — Corrective audit
+
+An independent forensic audit of WO-043 surfaced three findings. WO-043-CORR-01
+fixes them without changing the segmentation architecture, the audio pipeline,
+STT, ADR-014, or the WO-042 tools.
+
+### C1 — EOF boundary / timing consistency
+
+Previously, a candidate whose activity reached EOF could carry a
+`segment_end` greater than the source duration, while the derived WAV was
+physically truncated to EOF — so the manifest timing did not describe the
+actual audio interval. Correction:
+
+* `build_candidates` clamps every segment/activity bound to the source
+  duration (`segment_start >= 0`, `segment_end <= source_duration`) and drops
+  any degenerate zero-length segment;
+* `write_wav_derived` resolves the slice in the **sample domain**
+  (`start_frame` / `end_frame`) and returns the actual `(start_sec, end_sec)`
+  it wrote;
+* the manifest `segment_start_seconds` / `segment_end_seconds` /
+  `duration_seconds` are now taken from those actual sample-domain bounds, so
+  they always equal the derived WAV interval.
+
+### C2 — WO-042 manifest schema alignment
+
+The WO-043 segmentation manifest keeps the segmentation-specific forensic
+evidence (segment/activity bounds, `source_sha256`, `derived_sha256`,
+`candidate_status`). It is **not** a second dataset schema. A deterministic
+conversion (`convert_to_wo042`) and a `--wo042-manifest` CLI option emit the
+WO-042 canonical dataset manifest. Every converted row stays an unverified
+candidate (`real_transmission=false`, `ground_truth_verified=false`,
+`independent_verification=false`, empty `transcript`, `callsigns_present=[]`);
+no value is invented for unknown fields (`UNKNOWN`). The converted manifest is
+loadable by `wo042_validate_dataset.py` and never promotes a candidate to a real
+transmission.
+
+### C3 — CLI / manifest / SHA test hardening
+
+Integration tests now drive the **actual CLI entrypoint** (`wo043_segment.main`)
+end-to-end: real derived WAV writing, real manifest generation, real file
+hashing, SHA recomputed from the output bytes, manifest/file consistency over
+all rows, stale-output isolation, `--manifest`-without-`--output-dir` no longer
+producing a header-only manifest, CLI determinism (byte-identical manifests),
+and source immutability through the CLI.
+
+### Corrected test count
+
+The WO-043 unit/integration suite is now **27 passed** (was 16). The dataset
+candidates remain **unverified**; finding candidates still does not equal real
+transmissions.
 
 ---
 
@@ -115,6 +169,13 @@ energy_threshold = 0.01   (RMS, mono normalised to [-1,1]; proposed default)
 * **Source immutable** — the original is opened read-only; only derived WAVs are
   written, preserving the source native format (sample rate / channels / sample
   width) (WO-043 §2, §10).
+* **EOF clamped** (WO-043-CORR-01 C1) — every segment/activity bound is clamped
+  to the source duration, and the manifest timing always describes the actual
+  derived WAV interval (sample-domain source of truth).
+* **WO-042 schema compatible** (WO-043-CORR-01 C2) — `--wo042-manifest` emits a
+  deterministic WO-042 canonical dataset manifest; candidates stay unverified.
+* **CLI integration tested** (WO-043-CORR-01 C3) — the public CLI entrypoint is
+  exercised end-to-end (real WAV / manifest / SHA) by the test suite.
 
 ---
 
@@ -180,11 +241,15 @@ immutability, and manifest CANDIDATE defaults.
 
 ```
 pytest -q docs/benchmarks/stt/test_wo043_segment.py
-16 passed in 0.18s
+27 passed in 0.37s
 ```
 
-These synthetic tests are **not** evidence of real transmissions (WO-043 §21);
-they only verify algorithm behaviour.
+After WO-043-CORR-01, the suite also covers the actual CLI entrypoint, EOF
+clamp, t=0 clamp, manifest/file consistency over all rows, stale-output
+isolation, `--manifest`-without-`--output-dir`, CLI determinism, source
+immutability, and WO-042 schema compatibility. These synthetic tests are **not**
+evidence of real transmissions (WO-043 §21); they only verify algorithm
+behaviour and the CLI/forensic output path.
 
 ---
 
