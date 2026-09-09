@@ -9,9 +9,7 @@ durable -> operator) is covered separately in test_wo038_multicast_e2e.py.
 
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 from datetime import datetime, timezone
 
 import pytest
@@ -21,12 +19,6 @@ from app.audio.callsign import CallsignDetector
 from app.audio.decoder import AudioDecoder
 from app.audio.orchestrator import segment_to_raw
 from app.audio.transcriber import DeterministicTestTranscriber, TranscriptResult
-from app.database.session import DatabaseSessionManager
-from app.event.event import Event
-from app.event_repository.durable.sqlalchemy_event_repository import (
-    SQLAlchemyEventRepository,
-)
-from app.event_sources.factory.event_factory import EventFactory
 from app.event_sources.identity.event_identity import (
     EventIdentityResolver,
 )
@@ -210,42 +202,39 @@ def test_segment_to_raw_round_trip() -> None:
     assert raw["callsign"] == CALLSIGN
 
 
-# -- orchestrator process_segment (real durable repo) ------------------------
+# -- orchestrator process_segment (canonical input producer) ------------------
 
 
-@pytest.fixture()
-def repo():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    sm = DatabaseSessionManager(database_url=f"sqlite:///{path}", echo=False)
-    sm.initialize()
-    r = SQLAlchemyEventRepository(session_manager=sm)
-    r.initialize()
-    yield r
-    sm.close()
-    if os.path.exists(path):
-        os.remove(path)
+def test_process_segment_produces_canonical_input() -> None:
+    """WO-048: process_segment returns the canonical-input raw dict
+    (SourceEnvelope) and does NOT construct a canonical Event or persist it.
 
-
-def test_process_segment_persists_canonical_event(repo) -> None:
+    The orchestrator is a producer of canonical input ONLY; event creation,
+    projection and durable persistence belong to the canonical ingestion
+    boundary (AdapterRuntime -> EventFactory -> EventPipeline).
+    """
     from app.audio.orchestrator import AudioEventOrchestrator
 
     cfg = _cfg()
-    factory = EventFactory(identity_resolver=EventIdentityResolver())
     orch = AudioEventOrchestrator(
         cfg,
-        factory,
-        repo,
         transcriber=DeterministicTestTranscriber(phrase_map={CONTENT_ID: PHRASE}),
         callsign_detector=CallsignDetector(callsigns=[CALLSIGN]),
     )
     occ = datetime(2026, 9, 2, 10, 31, 4, tzinfo=timezone.utc)
-    seg = AudioSegment(content_id=CONTENT_ID, audio_bytes=b"pcm", occurred_at=occ, received_at=occ)
-    event = orch.process_segment(seg)
-    assert isinstance(event, Event)
-    assert event.source == "radio"
-    assert event.timestamp == occ  # occurred_at preserved, not ingestion time
-    assert repo.exists(event.event_id)
-    restored = repo.get(event.event_id)
-    assert restored.payload["transcript"] == PHRASE
-    assert restored.payload["detected_callsigns"] == [CALLSIGN]
+    seg = AudioSegment(
+        content_id=CONTENT_ID, audio_bytes=b"pcm", occurred_at=occ, received_at=occ
+    )
+    raw = orch.process_segment(seg)
+    # The orchestrator produces a raw dict (SourceEnvelope), NOT a canonical Event.
+    assert isinstance(raw, dict)
+    assert raw["transcript"] == PHRASE
+    assert raw["detected_callsigns"] == [CALLSIGN]
+    assert raw["content_id"] == CONTENT_ID
+    assert raw["timestamp"] == occ.isoformat()
+    assert raw["occurred_at"] == occ.isoformat()
+    assert raw["callsign"] == CALLSIGN
+    # WO-048: no canonical Event is created and nothing is persisted. The
+    # orchestrator has no repository and no EventFactory.
+    assert not hasattr(orch, "_repository")
+    assert not hasattr(orch, "_event_factory")
