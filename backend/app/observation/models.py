@@ -187,6 +187,21 @@ EVENT_TYPE_MAPPINGS = {
             "callsign": "callsign",
         },
     ),
+    "radio.recording": ObservationMapping(
+        event_type="radio.recording",
+        observation_type="radio",
+        source_type="driver",
+        default_confidence=0.6,
+        # WO-059: a radio RECORDING event is produced by the RTP -> VAD -> WAV
+        # path (WO-058), which has no source for frequency/callsign.  The
+        # observation must therefore NOT require frequency/callsign.  The
+        # recording payload (WAV reference, sha256, timestamps, multicast
+        # identity) is preserved via the field mapping / evidence raw_data.
+        required_fields=[],
+        field_mapping={
+            "recording": "recording",
+        },
+    ),
     "atak.map_object": ObservationMapping(
         event_type="atak.map_object",
         observation_type="atak",

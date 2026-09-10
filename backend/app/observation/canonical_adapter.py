@@ -32,6 +32,9 @@ Mapping:
     canonical.source              -> event_type derivation
                                      signal   -> "signal.message"
                                      radio    -> "radio.transmission"
+                                                  (or "radio.recording" when the
+                                                   payload carries a recording
+                                                   block, WO-059)
                                      atak     -> "atak.map_object"
                                      mqtt     -> "mqtt.message"
                                      telegram -> "telegram.message"
@@ -89,8 +92,19 @@ class CanonicalEventToObservationAdapter:
         Uses ``Event.source`` (the connector name) as the primary key.  Falls
         back to the canonical ``Event.event_type`` value so that canonical
         Events with a non-CUSTOM type still map deterministically.
+
+        WO-059: a canonical radio event that carries a ``recording`` block is a
+        radio RECORDING event.  The production recording path (RTP -> VAD ->
+        WAV, WO-058) has no source for frequency/callsign, so such an event
+        must NOT be forced into the frequency+callsign ``radio.transmission``
+        contract.  It is classified as ``radio.recording``.  A radio event
+        without a ``recording`` block keeps the existing
+        ``radio -> radio.transmission`` behaviour and its
+        frequency+callsign validation contract.
         """
         source = getattr(event, "source", "") or ""
+        if source == "radio" and self._is_radio_recording(event):
+            return "radio.recording"
         mapped = self._source_to_event_type.get(source)
         if mapped is not None:
             return mapped
@@ -100,6 +114,19 @@ class CanonicalEventToObservationAdapter:
             if value:
                 return value
         return "custom"
+
+    @staticmethod
+    def _is_radio_recording(event: Event) -> bool:
+        """Return True if a canonical Event is a radio recording event.
+
+        A radio recording event carries a ``recording`` block in its payload
+        (the shape produced by the WO-058 production recording path).  This is
+        the only signal the adapter uses to distinguish a recording from a
+        transmission, so it never invents frequency/callsign values and never
+        inspects the recording contents.
+        """
+        payload = getattr(event, "payload", None)
+        return isinstance(payload, dict) and "recording" in payload
 
     def _flatten_metadata(self, event: Event) -> Dict[str, Any]:
         """Flatten canonical EventMetadata into a plain dict for the mapper.
