@@ -60,8 +60,13 @@ logger = logging.getLogger(__name__)
 # the configured production declaration; an embedding deployment overrides them
 # for the actual radio.  STT is intentionally left disabled (no ``stt`` block)
 # so the adapter is fail-closed (no transcript), exactly as production behaves
-# when no acoustic engine is provisioned.  Recording is left disabled (no
-# ``vad_enabled``) so registration does not engage the per-source recorder.
+# when no acoustic engine is provisioned.
+#
+# WO-058: recording/VAD is now ACTIVATED (``vad_enabled: True``) so the
+# production radio source engages the existing
+# RTP -> FlowRouter -> per-flow recorder -> VAD -> WAV -> recording-raw
+# -> canonical pipeline.  All remaining recording parameters fall back to the
+# documented ``RecordingConfig`` defaults (activation, not VAD tuning).
 def _production_radio_source() -> SourceDefinition:
     """Build the production ``multicast_audio`` source definition (WO-056).
 
@@ -81,6 +86,12 @@ def _production_radio_source() -> SourceDefinition:
             "sample_rate": 8000,
             "channels": 1,
             "source_name": "radio",
+            # WO-058: activate the existing recording/VAD/WAV path.  The
+            # remaining recording parameters (vad_adaptive, pre/post_roll_ms,
+            # silence_timeout_ms, min_speech_ms, audio_archive_root,
+            # mp3_enabled, ...) intentionally use the documented
+            # ``RecordingConfig`` defaults.
+            "vad_enabled": True,
         },
         credentials_ref=None,
     )
