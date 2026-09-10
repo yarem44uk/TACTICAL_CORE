@@ -48,10 +48,45 @@ logger = logging.getLogger(__name__)
 # ``SourceDefinition`` objects.  An embedding deployment edits THIS list to
 # declare which real sources the production process should register.
 #
-# By default the catalog is empty (zero-source start).  A missing catalog is a
-# hard error, NOT an empty catalog — that distinction is enforced by the
-# provider (see ``ProductionSourceConfigProvider``).
-PRODUCTION_SOURCE_CATALOG: list[SourceDefinition] = []
+# By default the catalog declares the production multicast radio source
+# (WO-056) so ``main()`` -> ``register_sources()`` genuinely registers and
+# instantiates the ``multicast_audio`` adapter through the canonical
+# registration path.  A missing catalog is still a hard error, NOT an empty
+# catalog — that distinction is enforced by the provider (see
+# ``ProductionSourceConfigProvider``).
+#
+# WO-056-CORRECTIVE scope note: this entry makes the production *composition*
+# real.  It does NOT prove live multicast reception.  The address/port below are
+# the configured production declaration; an embedding deployment overrides them
+# for the actual radio.  STT is intentionally left disabled (no ``stt`` block)
+# so the adapter is fail-closed (no transcript), exactly as production behaves
+# when no acoustic engine is provisioned.  Recording is left disabled (no
+# ``vad_enabled``) so registration does not engage the per-source recorder.
+def _production_radio_source() -> SourceDefinition:
+    """Build the production ``multicast_audio`` source definition (WO-056).
+
+    The ``adapter_type`` must match the adapter type registered by
+    ``register_multicast_audio_adapter`` (``MULTICAST_AUDIO_ADAPTER_TYPE``),
+    i.e. ``"multicast_audio"``.
+    """
+    return SourceDefinition(
+        name="radio",
+        adapter_type="multicast_audio",
+        enabled=True,
+        config={
+            "multicast_address": "239.233.18.30",
+            "multicast_port": 5033,
+            "protocol": "rtp",
+            "codec": "pcm_alaw",
+            "sample_rate": 8000,
+            "channels": 1,
+            "source_name": "radio",
+        },
+        credentials_ref=None,
+    )
+
+
+PRODUCTION_SOURCE_CATALOG: list[SourceDefinition] = [_production_radio_source()]
 
 
 class ProductionSourceConfigProvider(ISourceConfigProvider):
