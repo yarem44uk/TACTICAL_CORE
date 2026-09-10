@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from app.audio.callsign import CallsignDetector
 from app.contracts.audio import ITranscriber
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ def build_transcript_raw(
     processed_at: datetime,
     processing_ms: float,
     wav_sha256: str | None = None,
+    callsign_detector: CallsignDetector | None = None,
 ) -> dict[str, Any]:
     """Build an EventFactory-compatible raw dict for a derived transcript event.
 
@@ -88,9 +90,21 @@ def build_transcript_raw(
     (``radio|content|<audio_recording_id>``) — it never collides with the
     recording event's ``UNIQUE(event_id)`` (WO-039-C3 §15).
 
+    When a ``callsign_detector`` is supplied (the production path), callsign
+    detection is applied to the transcript ``text`` and the result is attached
+    to the raw dict using the established WO-038 callsign contract:
+
+      * ``detected_callsigns``  (list[str])
+      * ``confidence``          (float)
+      * ``detection_method``    (str)
+      * ``callsign``            (primary callsign, only when one is detected)
+
+    The original transcript ``text`` is NEVER modified (the detector preserves
+    it, and the nested ``transcript.text`` is written verbatim).
+
     No database columns are introduced; the transcript lives in ``Event.payload``.
     """
-    return {
+    raw: dict[str, Any] = {
         "timestamp": processed_at.isoformat(),
         "occurred_at": processed_at.isoformat(),
         "audio_recording_id": job.audio_recording_id,
@@ -110,6 +124,14 @@ def build_transcript_raw(
             "wav_sha256": wav_sha256,
         },
     }
+    if callsign_detector is not None:
+        result = callsign_detector.detect(text)
+        raw["detected_callsigns"] = list(result.detected_callsigns)
+        raw["confidence"] = result.confidence
+        raw["detection_method"] = result.detection_method
+        if result.detected_callsigns:
+            raw["callsign"] = result.detected_callsigns[0]
+    return raw
 
 
 def read_wav_readonly(path: str) -> tuple[bytes, dict[str, Any]]:
@@ -171,11 +193,19 @@ class SttWorker:
         maxsize: int = 100,
         on_transcript: Callable[[dict[str, Any]], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        callsign_detector: CallsignDetector | None = None,
     ) -> None:
         self._transcriber = transcriber
         self._source = source
         self._language = language
         self._engine = engine
+        # WO-057: callsign detection on the derived transcript.  When the worker
+        # is constructed without an explicit detector (e.g. directly in tests)
+        # it defaults to the deterministic heuristic detector, matching the
+        # source adapter's own default.  It is only applied to a real
+        # transcript; a fail-closed (``transcriber=None``) worker never reaches
+        # it because no transcript is ever produced.
+        self._callsign_detector = callsign_detector or CallsignDetector()
         self._queue: queue.Queue[SttJob] = queue.Queue(maxsize=maxsize)
         # Public, reassignable callback: the owning source adapter wires this to
         # route the derived transcript event into its read_events() queue.
@@ -437,5 +467,6 @@ class SttWorker:
             processed_at=processed_at,
             processing_ms=processing_ms,
             wav_sha256=meta["sha256"],
+            callsign_detector=self._callsign_detector,
         )
         self.on_transcript(raw)

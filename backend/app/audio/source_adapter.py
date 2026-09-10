@@ -128,7 +128,7 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         self._stt_worker = stt_worker
         if self._stt_worker is None:
             self._stt_worker = _build_production_stt_worker(
-                definition, self._config
+                definition, self._config, self._callsign_detector
             )
         if self._stt_worker is not None:
             # Route transcript events into the adapter's read_events() queue.
@@ -392,6 +392,7 @@ def make_multicast_audio_adapter(
 def _build_production_stt_worker(
     definition: SourceDefinition,
     audio_config: AudioConfig,
+    callsign_detector: CallsignDetector | None = None,
 ) -> SttWorker | None:
     """Build a production :class:`SttWorker` from the source STT configuration.
 
@@ -405,7 +406,9 @@ def _build_production_stt_worker(
     ``DeterministicTestTranscriber`` (WO-041-CORR F-01/F-03).
 
     The worker is engine-neutral and offline: no engine is selected here, no model
-    is downloaded, and no network is touched.
+    is downloaded, and no network is touched.  The ``callsign_detector`` (WO-057)
+    is passed through so the derived transcript event carries callsign
+    intelligence using the adapter's configured detector.
     """
     stt_cfg = SttConfig.from_dict(definition.config.get("stt"))
     if not stt_cfg.enabled:
@@ -424,4 +427,5 @@ def _build_production_stt_worker(
         transcriber,
         source=audio_config.source_name,
         language=stt_cfg.language,
+        callsign_detector=callsign_detector,
     )
