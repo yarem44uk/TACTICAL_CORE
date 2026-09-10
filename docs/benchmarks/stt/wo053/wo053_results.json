@@ -1,0 +1,100 @@
+{
+  "benchmark": "WO-053 STT benchmark gate",
+  "timestamp": "2026-09-10T09:58:11.890025+00:00",
+  "environment": {
+    "python_version": "3.13.5",
+    "python_impl": "CPython",
+    "platform": "Linux-6.12.48+deb13-cloud-amd64-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "cpu_count": 8,
+    "os_release": "6.12.48+deb13-cloud-amd64",
+    "total_ram_kb": 16381784,
+    "process_peak_rss_kb": 14236
+  },
+  "dataset": {
+    "manifest_path": "/opt/data/tactical_core_github/docs/benchmarks/stt/wo053/wo053_dataset_manifest.csv",
+    "row_count": 4,
+    "inputs": [
+      {
+        "audio_id": "wo053_tone_440",
+        "audio_path": "/opt/data/wo053_audio/wo053_tone_440.wav",
+        "sha256": "fbdb8188668684055f8a7cfe482e435b2a30bc5dddff13db26a83866bbf21a34",
+        "duration_seconds": "2.0",
+        "sample_rate": "8000",
+        "source_type": "synthetic",
+        "real_transmission": "false",
+        "speech_present": "false",
+        "transcript": ""
+      },
+      {
+        "audio_id": "wo053_tone_1000",
+        "audio_path": "/opt/data/wo053_audio/wo053_tone_1000.wav",
+        "sha256": "51894d3fc07961f3d56feba56b530a1e0665d355a1f1667434548b522317744d",
+        "duration_seconds": "3.0",
+        "sample_rate": "8000",
+        "source_type": "synthetic",
+        "real_transmission": "false",
+        "speech_present": "false",
+        "transcript": ""
+      },
+      {
+        "audio_id": "wo053_tone_880_short",
+        "audio_path": "/opt/data/wo053_audio/wo053_tone_880_short.wav",
+        "sha256": "4c9685020b8990e5d1e6217076787a66e2c260894db5bab929694e9b670275d5",
+        "duration_seconds": "0.8",
+        "sample_rate": "8000",
+        "source_type": "synthetic",
+        "real_transmission": "false",
+        "speech_present": "false",
+        "transcript": ""
+      },
+      {
+        "audio_id": "wo053_tone_220",
+        "audio_path": "/opt/data/wo053_audio/wo053_tone_220.wav",
+        "sha256": "bfb8f0edf7a1a6f25090413365d84366f13c1517c7b95ed2c16dbb2155bc5b94",
+        "duration_seconds": "1.5",
+        "sample_rate": "8000",
+        "source_type": "synthetic",
+        "real_transmission": "false",
+        "speech_present": "false",
+        "transcript": ""
+      }
+    ],
+    "speech_rows": 0
+  },
+  "candidates": [
+    {
+      "candidate": "faster_whisper",
+      "available": false,
+      "status": "NOT_AVAILABLE",
+      "version": null,
+      "model": null,
+      "model_path": null,
+      "device": null,
+      "compute_type": null,
+      "language": null,
+      "availability_reason": "module 'faster_whisper' not installed in this environment; no model file present; offline rule forbids download",
+      "runs": []
+    },
+    {
+      "candidate": "vosk",
+      "available": false,
+      "status": "NOT_AVAILABLE",
+      "version": null,
+      "model": null,
+      "model_path": null,
+      "device": null,
+      "compute_type": null,
+      "language": null,
+      "availability_reason": "module 'vosk' not installed in this environment; no model file present; offline rule forbids download",
+      "runs": []
+    }
+  ],
+  "benchmark_executed": false,
+  "execution_metadata": {
+    "wall_time_seconds": 0.0049,
+    "cpu_seconds": 0.0281,
+    "note": "NO engine runtime/model provisioned locally; benchmark NOT executed on real acoustic inference."
+  },
+  "production_selection_made": false
+}
