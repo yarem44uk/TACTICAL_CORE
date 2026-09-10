@@ -43,6 +43,7 @@ from app.audio.audio_config import AudioConfig
 from app.audio.audio_segment import AudioSegment, decode_frame, encode_frame
 from app.audio.callsign import CallsignDetector, CallsignResult
 from app.audio.decoder import AudioDecoder
+from app.audio.flow_router import FlowKey, FlowPipeline, FlowRouter
 from app.audio.mp3_derivative import Mp3EncodeError, Mp3Job, Mp3Worker, encode_mp3
 from app.audio.multicast_receiver import MulticastAudioReceiver
 from app.audio.orchestrator import AudioEventOrchestrator
@@ -97,6 +98,9 @@ __all__ = [
     "DeterministicTestTranscriber",
     "EnergyVad",
     "FinalizeReason",
+    "FlowKey",
+    "FlowPipeline",
+    "FlowRouter",
     "Mp3EncodeError",
     "Mp3Job",
     "Mp3Worker",

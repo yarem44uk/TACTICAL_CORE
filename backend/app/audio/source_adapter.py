@@ -30,6 +30,7 @@ from app.audio.audio_config import AudioConfig
 from app.audio.audio_segment import AudioSegment
 from app.audio.callsign import CallsignDetector
 from app.audio.decoder import AudioDecoder
+from app.audio.flow_router import FlowRouter
 from app.audio.multicast_receiver import MulticastAudioReceiver
 from app.audio.orchestrator import segment_to_raw
 from app.audio.recorder import TransmissionRecorder
@@ -99,15 +100,22 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         self._queue_lock = threading.Lock()
         self._receiver: Any = None
         self._credentials_ref = definition.credentials_ref
-        # WO-039-B: per-source recording pipeline.  Engaged only when the source
-        # config enables VAD-driven recording.
-        self._recorder = recorder
-        if self._recorder is None:
-            rec_cfg = RecordingConfig.from_source_definition(definition.config)
-            if rec_cfg.enabled:
-                self._recorder = TransmissionRecorder(
-                    self._config, rec_cfg, on_recording=self._on_recording
-                )
+        # WO-039-B / WO-055: per-source recording pipeline.  ``_rec_cfg`` drives
+        # both the backward-compat single recorder (``_recorder``, used by
+        # direct-drive callers such as WO-052) and the production per-flow
+        # recorders created by ``_flow_router`` for the real RTP socket path.
+        self._rec_cfg = RecordingConfig.from_source_definition(definition.config)
+        self._recording_enabled = self._rec_cfg.enabled
+        self._recorder_impl = recorder
+        self._flow_router = None
+        if self._recorder_impl is None and self._recording_enabled:
+            # WO-055: route the RTP socket path by UDP source identity.  Each
+            # distinct flow gets its own tracker + TransmissionRecorder so two
+            # talkers on one group/port cannot contaminate one another.
+            self._flow_router = FlowRouter(
+                recorder_factory=self._make_flow_recorder,
+                expected_payload_type=self._config.payload_type,
+            )
 
         # WO-041-CORR F-03: the bounded WAV STT worker is the ONLY intended
         # production transcription boundary.  A finalized WAV recording is the
@@ -194,7 +202,17 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         super().start()
         if self._receiver is None:
             if self._config.is_rtp:
-                self._receiver = RtpReceiver(self._config, on_pcm=self._on_pcm)
+                if self._flow_router is not None:
+                    # WO-055: production per-flow isolation for the RTP socket.
+                    self._receiver = RtpReceiver(
+                        self._config,
+                        on_pcm=self._on_pcm,
+                        flow_router=self._flow_router,
+                    )
+                else:
+                    self._receiver = RtpReceiver(
+                        self._config, on_pcm=self._on_pcm
+                    )
             else:
                 self._receiver = MulticastAudioReceiver(
                     self._config, on_segment=self._on_segment
@@ -205,9 +223,18 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         """Stop the adapter and its receiver.  Idempotent."""
         if self._receiver is not None:
             self._receiver.stop()
-        if self._recorder is not None:
+        if self._flow_router is not None:
             try:
-                self._recorder.on_shutdown()
+                self._flow_router.shutdown_all()
+            except Exception as exc:  # noqa: BLE001 - never crash stop()
+                logger.warning(
+                    "MulticastAudioSourceAdapter '%s' flow-router shutdown error: %s",
+                    self._definition.name,
+                    exc,
+                )
+        if self._recorder_impl is not None:
+            try:
+                self._recorder_impl.on_shutdown()
             except Exception as exc:  # noqa: BLE001 - never crash stop()
                 logger.warning(
                     "MulticastAudioSourceAdapter '%s' recorder shutdown error: %s",
@@ -321,6 +348,35 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         """
         with self._queue_lock:
             self._queue.append(raw)
+
+    @property
+    def _recorder(self) -> TransmissionRecorder | None:
+        """Backward-compat single recorder.
+
+        WO-055 keeps a single ``TransmissionRecorder`` for direct-drive callers
+        (e.g. WO-052 exercises ``adapter._recorder`` directly).  It is created
+        lazily on first access so the production RTP socket path — which uses the
+        per-flow recorders owned by ``_flow_router`` — never instantiates an
+        unused recorder.  Returns ``None`` when recording is disabled for the
+        source.
+        """
+        if self._recorder_impl is None and self._recording_enabled:
+            self._recorder_impl = TransmissionRecorder(
+                self._config, self._rec_cfg, on_recording=self._on_recording
+            )
+        return self._recorder_impl
+
+    def _make_flow_recorder(self, flow_key: Any) -> TransmissionRecorder | None:
+        """Create a per-flow ``TransmissionRecorder`` (WO-055 flow isolation).
+
+        Each distinct UDP source flow on a group/port gets its own recorder, so
+        two talkers never share VAD / segmenter / recording state.  The recorder
+        feeds finalized recordings through the same ``_on_recording`` hook as the
+        backward-compat recorder, so the canonical event path is unchanged.
+        """
+        return TransmissionRecorder(
+            self._config, self._rec_cfg, on_recording=self._on_recording
+        )
 
 
 def make_multicast_audio_adapter(

@@ -37,9 +37,11 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from app.audio.alaw import alaw_to_pcm
 from app.audio.audio_config import AudioConfig
+from app.audio.flow_router import FlowKey
 from app.audio.rtp import parse_rtp_packet, validate_rtp_packet
 from app.audio.rtp_stream import RtpDisposition, RtpStreamTracker
 
@@ -136,6 +138,7 @@ class RtpReceiver:
         self,
         config: AudioConfig,
         on_pcm: Callable[[RtpPcmFrame], None],
+        flow_router: Any | None = None,
     ) -> None:
         if not config.is_rtp:
             raise ValueError(
@@ -143,7 +146,12 @@ class RtpReceiver:
             )
         self._config = config
         self._on_pcm = on_pcm
-        self._tracker = RtpStreamTracker(expected_payload_type=config.payload_type)
+        # WO-055: when a FlowRouter is supplied, RTP state is owned per UDP flow
+        # (FlowKey -> tracker).  When it is absent (backward compatibility), a
+        # single tracker is used for the whole socket (pre-WO-055 behaviour).
+        self._flow_router = flow_router
+        if self._flow_router is None:
+            self._tracker = RtpStreamTracker(expected_payload_type=config.payload_type)
         self._socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -198,7 +206,10 @@ class RtpReceiver:
             running = self._running
             last_error = self._last_error
             malformed = self._malformed
-        snapshot = self._tracker.snapshot()
+        if self._flow_router is not None:
+            snapshot = self._flow_router.snapshot()
+        else:
+            snapshot = self._tracker.snapshot()
         snapshot.update(
             {
                 "running": running,
@@ -286,14 +297,14 @@ class RtpReceiver:
             try:
                 while not self._stop_event.is_set():
                     try:
-                        payload, _addr = sock.recvfrom(self._config.receive_buffer)
+                        payload, addr = sock.recvfrom(self._config.receive_buffer)
                     except TimeoutError:
                         continue
                     except OSError as exc:
                         self._record_error(f"recv failed: {exc}")
                         logger.warning("WO-039-A RTP receiver recv failed: %s", exc)
                         break
-                    self._handle_payload(payload)
+                    self._handle_payload(payload, addr)
             finally:
                 self._drop_membership(sock)
                 try:
@@ -311,7 +322,7 @@ class RtpReceiver:
             with self._lock:
                 self._running = False
 
-    def _handle_payload(self, payload: bytes) -> None:
+    def _handle_payload(self, payload: bytes, addr: tuple | None = None) -> None:
         """Parse/validate one datagram, decode, and dispatch a PCM frame."""
         try:
             packet = parse_rtp_packet(payload)
@@ -323,20 +334,53 @@ class RtpReceiver:
             logger.warning("WO-039-A RTP receiver dropped malformed packet: %s", exc)
             return
 
+        # WO-055: per-flow isolation.  Route BEFORE the PCM frame is created, so
+        # the frame is never used as a routing key and the source identity
+        # (src_ip, src_port, dst_port) selects the per-flow tracker + recorder.
+        if self._flow_router is not None and addr is not None:
+            flow_key = FlowKey(
+                src_ip=str(addr[0]),
+                src_port=int(addr[1]),
+                dst_port=self._config.multicast_port,
+            )
+            pipeline = self._flow_router.get_or_create(flow_key)
+            result = pipeline.tracker.on_packet(packet)
+            # Duplicates are never emitted twice (WO-039-A §5).
+            if result.disposition == RtpDisposition.DUPLICATE:
+                return
+            frame = self._build_frame(packet)
+            try:
+                if pipeline.recorder is not None:
+                    pipeline.recorder.on_pcm(frame)
+                else:
+                    self._on_pcm(frame)
+            except Exception as exc:  # noqa: BLE001 - isolate per-frame failure
+                self._record_error(f"on_pcm failed: {exc}")
+                logger.exception("WO-039-A RTP receiver on_pcm hook failed")
+            return
+
         result = self._tracker.on_packet(packet)
         # Duplicates are never emitted twice (WO-039-A §5).  A late /
         # out-of-order packet is still real audio, so it is emitted.
         if result.disposition == RtpDisposition.DUPLICATE:
             return
 
+        frame = self._build_frame(packet)
+        try:
+            self._on_pcm(frame)
+        except Exception as exc:  # noqa: BLE001 - isolate per-frame failure
+            self._record_error(f"on_pcm failed: {exc}")
+            logger.exception("WO-039-A RTP receiver on_pcm hook failed")
+
+    def _build_frame(self, packet: Any) -> RtpPcmFrame:
+        """Decode the RTP payload and build the outgoing PCM frame."""
         if self._config.codec == "pcm_alaw":
             pcm = alaw_to_pcm(packet.payload)
         else:
             # Unknown codec: pass the payload through unchanged (the verified
             # PT=8 path is A-law; anything else is not decoded here).
             pcm = packet.payload
-
-        frame = RtpPcmFrame(
+        return RtpPcmFrame(
             pcm=pcm,
             sequence_number=packet.sequence_number,
             timestamp=packet.timestamp,
@@ -346,11 +390,6 @@ class RtpReceiver:
             channels=self._config.channels,
             received_at=datetime.now(timezone.utc),
         )
-        try:
-            self._on_pcm(frame)
-        except Exception as exc:
-            self._record_error(f"on_pcm failed: {exc}")
-            logger.exception("WO-039-A RTP receiver on_pcm hook failed")
 
     def _record_error(self, message: str) -> None:
         with self._lock:
