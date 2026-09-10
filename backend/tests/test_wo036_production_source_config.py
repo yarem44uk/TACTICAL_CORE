@@ -117,12 +117,19 @@ def test_default_catalog_is_module_constant() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Adapter factory — five production adapter types
+# Adapter factory — six production adapter types
 # ---------------------------------------------------------------------------
-def test_production_factory_registers_five_types() -> None:
+def test_production_factory_registers_six_types() -> None:
     factory = build_production_adapter_factory()
     registered = factory.registered_types()
-    assert registered == ["atak", "mqtt", "radio", "signal", "telegram"]
+    assert registered == [
+        "atak",
+        "mqtt",
+        "multicast_audio",
+        "radio",
+        "signal",
+        "telegram",
+    ]
 
 
 def test_factory_unknown_adapter_fails_closed() -> None:
@@ -143,8 +150,15 @@ def test_production_wiring_provider_and_factory() -> None:
     assert isinstance(provider, ISourceConfigProvider)
     assert isinstance(factory, AdapterFactory)
     assert main.SOURCE_CONFIGURATION_GAP is False
-    # All five production adapter types are wired into the production factory.
-    assert factory.registered_types() == ["atak", "mqtt", "radio", "signal", "telegram"]
+    # All six production adapter types are wired into the production factory.
+    assert factory.registered_types() == [
+        "atak",
+        "mqtt",
+        "multicast_audio",
+        "radio",
+        "signal",
+        "telegram",
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -141,20 +141,26 @@ def build_production_source_provider(
 
 
 def build_production_adapter_factory() -> AdapterFactory:
-    """Construct the production ``AdapterFactory`` with all five adapter types.
+    """Construct the production ``AdapterFactory`` with all six adapter types.
 
-    Registers exactly the five known production adapter types through the
+    Registers exactly the six known production adapter types through the
     existing registration helpers (ADR-010): atak, mqtt, signal, radio,
-    telegram.  No dynamic plugin discovery, no new registry.
+    telegram, multicast_audio.  No dynamic plugin discovery, no new registry.
+
+    ``multicast_audio`` (WO-056) is the real RTP multicast radio source
+    adapter (``MulticastAudioSourceAdapter``); it is registered here so the
+    production composition can build the production radio path and the radio
+    source is not an isolated test-only subsystem.
 
     Returns:
-        An ``AdapterFactory`` able to resolve all five adapter types.
+        An ``AdapterFactory`` able to resolve all six adapter types.
     """
     from ..adapters.atak_adapter_registration import register_atak_adapter
     from ..adapters.mqtt_adapter_registration import register_mqtt_adapter
     from ..adapters.radio_adapter_registration import register_radio_adapter
     from ..adapters.signal_adapter_registration import register_signal_adapter
     from ..adapters.telegram_adapter_registration import register_telegram_adapter
+    from app.audio.registration import register_multicast_audio_adapter
 
     factory = AdapterFactory()
     register_atak_adapter(factory)
@@ -162,4 +168,5 @@ def build_production_adapter_factory() -> AdapterFactory:
     register_signal_adapter(factory)
     register_radio_adapter(factory)
     register_telegram_adapter(factory)
+    register_multicast_audio_adapter(factory)
     return factory
