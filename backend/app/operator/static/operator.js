@@ -406,6 +406,22 @@ function wallTime(value) {
   return t !== -1 ? s.substring(t + 1, t + 9) : s;
 }
 
+function recordingPlayback(obs) {
+  var payload = obs.evidence_payload || {};
+  var raw = payload.raw_data || {};
+  var recordingId = raw.audio_recording_id !== undefined
+    ? raw.audio_recording_id
+    : payload.audio_recording_id;
+  if (!recordingId) return "";
+  // Playback URL is built ONLY from the canonical recording identity
+  // (audio_recording_id) — never from wav_path / mp3_path (WO-062 §17/§18).
+  var url = API + "/recordings/" + encodeURIComponent(recordingId);
+  return '<div class="wall-playback">' +
+    '<audio controls preload="none" data-rec-url="' + escapeHtml(url) + '"></audio>' +
+    '<div class="wall-playback-status">Recording ' + escapeHtml(String(recordingId)) + "</div>" +
+    "</div>";
+}
+
 function wallRecordingDetail(obs) {
   var payload = obs.evidence_payload || {};
   var raw = payload.raw_data || {};
@@ -434,7 +450,39 @@ function wallRecordingDetail(obs) {
   add("audio_recording_id", raw.audio_recording_id !== undefined ? raw.audio_recording_id : payload.audio_recording_id);
   add("content_id", raw.content_id !== undefined ? raw.content_id : payload.content_id);
   return '<details class="wall-details"><summary>Recording</summary>' +
-    '<table class="table">' + rows.join("") + "</table></details>";
+    '<table class="table">' + rows.join("") + "</table>" +
+    recordingPlayback(obs) + "</details>";
+}
+
+/* Auth-aware audio playback (WO-062).  The <audio> element cannot carry an
+   Authorization header, so the recording is fetched with the Bearer token via
+   the existing withAuth() helper, turned into a blob, and set as the media src.
+   The URL is the operator recording endpoint keyed by the canonical recording
+   identity — never a filesystem path.  GET-only. */
+function bindRecordingAudio(container) {
+  var audios = container.querySelectorAll("audio[data-rec-url]");
+  Array.prototype.forEach.call(audios, function (a) {
+    a.addEventListener("play", function () {
+      if (a.getAttribute("data-loaded") === "1") return;
+      a.setAttribute("data-loaded", "1");
+      var url = a.getAttribute("data-rec-url");
+      fetch(url, withAuth({ method: "GET" }))
+        .then(function (res) {
+          if (!res.ok) throw new Error("audio unavailable");
+          return res.blob();
+        })
+        .then(function (blob) {
+          a.src = URL.createObjectURL(blob);
+          a.load();
+          a.play().catch(function () {});
+        })
+        .catch(function () {
+          a.setAttribute("data-loaded", "");
+          var status = a.parentNode && a.parentNode.querySelector(".wall-playback-status");
+          if (status) status.textContent = "Recording unavailable";
+        });
+    });
+  });
 }
 
 function isRadioObservation(obs) {
@@ -495,6 +543,7 @@ function loadObservations() {
         feed.innerHTML = '<div class="detail-msg">No observations available.</div>';
       } else {
         feed.innerHTML = wallState.items.map(wallRow).join("");
+        bindRecordingAudio(feed);
         Array.prototype.forEach.call(feed.querySelectorAll(".feed-item"), function (node) {
           node.addEventListener("click", function () {
             var idx = parseInt(node.getAttribute("data-idx"), 10);

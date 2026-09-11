@@ -25,10 +25,12 @@ helpers already produce ISO-8601 strings).
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy.exc
+from sqlalchemy import select
 
 from app.entity_relations.sqlalchemy_relation_repository import (
     SQLAlchemyRelationRepository,
@@ -40,6 +42,7 @@ from app.event.event import Event
 from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
+from app.event_sources.identity.event_identity import EventIdentityResolver
 from app.intelligence.observation.model import Observation
 from app.intelligence.observation.repository import (
     SessionManagerObservationRepository,
@@ -48,6 +51,32 @@ from app.operator.severity import (
     Severity,
     classify,
 )
+from app.operator.recording_access import (
+    RecordingAccess,
+    RecordingArtifact,
+    RecordingIntegrityError,
+    RecordingNotFoundError,
+    RecordingPathEscapeError,
+    RecordingUnavailableError,
+)
+
+
+RECORDING_ARCHIVE_ROOT_ENV = "RECORDING_ARCHIVE_ROOT"
+
+
+def _default_archive_root() -> str:
+    """Resolve the authoritative audio archive root for the operator process.
+
+    The server (not the client) determines the archive root.  It is read from
+    the ``RECORDING_ARCHIVE_ROOT`` environment variable; when unset it falls
+    back to the production default ``audio`` directory resolved to an absolute
+    real path (matching ``RecordingConfig.audio_archive_root``).  This keeps the
+    operator a pure consumer — it never accepts an archive root from a client.
+    """
+    configured = os.environ.get(RECORDING_ARCHIVE_ROOT_ENV)
+    if configured:
+        return os.path.realpath(configured)
+    return os.path.realpath(os.path.join(os.getcwd(), "audio"))
 
 
 class OperatorError(Exception):
@@ -511,3 +540,100 @@ class OperatorService:
             "durable_entities": entity_count,
             "last_ingestion": "unavailable",
         }
+
+    # -- recording evidence access (WO-062) ----------------------------------
+
+    @property
+    def _recording_access(self) -> RecordingAccess:
+        """Lazily build the confined recording-access resolver (WO-062).
+
+        The operator is a pure read-only consumer of the authoritative audio
+        archive.  It never accepts an archive root or a path from a client; the
+        archive root is server-determined (``RECORDING_ARCHIVE_ROOT`` / the
+        production default) and recording metadata is resolved from the
+        canonical recording identity via the observation store.
+        """
+        if self.__dict__.get("_recording_access_impl") is None:
+            self._recording_access_impl = RecordingAccess(
+                archive_root=_default_archive_root(),
+                metadata_resolver=self._resolve_recording_metadata,
+            )
+        return self._recording_access_impl
+
+    def _resolve_recording_metadata(self, recording_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve ``recording_id`` to the recording metadata from the store.
+
+        Uses the existing canonical recording identity chain:
+
+            audio_recording_id -> content_id -> event_id -> immutable_id
+
+        The deterministic ``event_id`` for a radio recording is derived by the
+        WO-025 identity resolver from ``radio|content|<content_id>`` (where
+        ``content_id == audio_recording_id``), and the observation's
+        ``immutable_id`` equals that canonical ``event_id``.  The observation
+        evidence payload preserves the recording metadata (``wav_path``,
+        ``sha256``, ``format``, ...), which is returned as-is.
+
+        Returns ``None`` when the identity is unknown (no such observation), so
+        the caller maps it to a safe 404.  Read-only; never mutates state.
+        """
+        if self._observations is None:
+            raise ReadDependencyUnavailableError(
+                "observation read repository unavailable"
+            )
+        try:
+            event_id = str(
+                EventIdentityResolver().resolve(
+                    {"content_id": recording_id, "audio_recording_id": recording_id},
+                    "radio",
+                )
+            )
+            # ``resolve`` above returns the UUID5 of ``radio|content|<content_id>``
+            # for the radio source; if it ever returned None (should not for a
+            # content_id), fall back to nothing.
+            if not event_id:
+                return None
+            stmt = select(Observation).where(
+                Observation.immutable_id == event_id,
+                Observation.is_deleted == False,  # noqa: E712
+            )
+            with self._observations.session_manager.session(commit=False) as session:
+                obs = session.execute(stmt).scalar_one_or_none()
+        except sqlalchemy.exc.SQLAlchemyError as exc:
+            raise ReadDependencyUnavailableError(
+                "authoritative observation store unavailable"
+            ) from exc
+        if obs is None:
+            return None
+        evidence = obs.evidence_payload or {}
+        raw = evidence.get("raw_data") or {}
+        recording = raw.get("recording") or evidence.get("recording")
+        if not isinstance(recording, dict):
+            return None
+        return dict(recording)
+
+    def get_recording(self, recording_id: str) -> RecordingArtifact:
+        """Resolve a canonical ``recording_id`` to a verified, confined artifact.
+
+        Read-only.  Delegates to :class:`RecordingAccess`, which performs
+        identity resolution, path confinement, existence validation and SHA-256
+        integrity re-verification BEFORE any media byte is exposed.
+
+        Raises:
+            NotFoundError: recording identity unknown or artifact unavailable
+                (HTTP 404).  No filesystem path / internal detail is exposed.
+            ReadDependencyUnavailableError: observation read dependency
+                unavailable (HTTP 503).
+        """
+        try:
+            return self._recording_access.resolve(recording_id)
+        except RecordingNotFoundError as exc:
+            raise NotFoundError(f"recording {recording_id!r} not found") from exc
+        except (
+            RecordingUnavailableError,
+            RecordingPathEscapeError,
+            RecordingIntegrityError,
+        ) as exc:
+            # Safe, generic, non-revealing error.  Never expose paths, archive
+            # root, OS errors, or stack traces.
+            raise NotFoundError("recording artifact unavailable") from exc

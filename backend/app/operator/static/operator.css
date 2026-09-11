@@ -256,3 +256,20 @@ pre.json { background: var(--panel-2); padding: 12px; border-radius: 6px; overfl
 .wall-unavailable {
   border-color: var(--err);
 }
+
+/* WO-062 — recording playback (new classes only; existing appearance unchanged) */
+.wall-playback {
+  margin: 8px 0 4px;
+}
+.wall-playback audio {
+  width: 100%;
+  max-width: 420px;
+  display: block;
+}
+.wall-playback-status {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}

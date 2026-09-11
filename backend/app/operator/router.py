@@ -16,9 +16,14 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Header, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from app.operator.recording_access import (
+    InvalidRecordingRangeError,
+    UnsatisfiableRangeError,
+    parse_range,
+)
 from app.operator.service import (
     InvalidRequestError,
     NotFoundError,
@@ -304,6 +309,109 @@ def get_event(request: Request, event_id: str) -> JSONResponse:
     service: OperatorService = request.app.state.operator_service
     result = service.get_event(event_id)
     return JSONResponse(result)
+
+
+# -- recording evidence access (WO-062) --------------------------------------
+# Read-only, identity-based WAV serving.  The client supplies ONLY the canonical
+# recording identity in the URL; the server resolves the recording from its
+# canonical identity, confines the resolved path to the authoritative archive
+# root, re-verifies SHA-256, and serves the WAV with RFC 9110 byte-range support.
+
+# Streaming chunk size for the response body (bounded, never loads the whole
+# file into memory merely to serve a range).
+_STREAM_CHUNK = 1 << 16
+
+
+def _recording_response_headers(artifact) -> dict:
+    """Common success headers for a WAV artifact response."""
+    return {
+        "Accept-Ranges": "bytes",
+        "Content-Type": artifact.mime_type,
+    }
+
+
+@router.get("/recordings/{recording_id}")
+async def get_recording(
+    request: Request,
+    recording_id: str,
+    range_header: Optional[str] = Header(default=None, alias="Range"),
+) -> Response:
+    """GET /api/v1/operator/recordings/{recording_id} — authenticated WAV evidence.
+
+    The client provides only the canonical recording identity (``audio_recording_id``).
+    The server resolves it to the authoritative WAV artifact, confines the path to
+    the configured archive root, re-verifies SHA-256, and streams the WAV with
+    RFC 9110 single byte-range support.
+
+    Responses:
+        * 200 OK  — full artifact (``Content-Type: audio/wav``,
+          ``Content-Length``, ``Accept-Ranges: bytes``).
+        * 206 Partial Content — satisfiable ``Range`` (``Content-Range``,
+          ``Content-Length``, ``Accept-Ranges: bytes``).
+        * 416 Range Not Satisfiable — unsatisfiable ``Range``
+          (``Content-Range: bytes */<size>``).
+        * 400 — malformed/unsupported ``Range``.
+        * 404 — recording identity unknown or artifact unavailable/invalid.
+
+    Read-only: never mutates the WAV, MP3, metadata, Event, Observation or
+    Journal.  The integrity check runs before any media byte is exposed.
+    """
+    service: OperatorService = request.app.state.operator_service
+    # The resolver performs SHA-256 over the artifact; offload the blocking IO
+    # so it never blocks the asyncio event loop.
+    artifact = await asyncio.to_thread(service.get_recording, recording_id)
+    size = artifact.size
+
+    start, end = 0, size - 1
+    status_code = 200
+    headers = _recording_response_headers(artifact)
+
+    if range_header:
+        try:
+            start, end = parse_range(range_header, size)
+        except UnsatisfiableRangeError:
+            return JSONResponse(
+                status_code=416,
+                content={
+                    "detail": "range not satisfiable",
+                    "error_type": "RangeNotSatisfiable",
+                },
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes */{size}",
+                },
+            )
+        except InvalidRecordingRangeError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "invalid range",
+                    "error_type": "InvalidRequestError",
+                },
+                headers={"Accept-Ranges": "bytes"},
+            )
+        status_code = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+
+    headers["Content-Length"] = str(end - start + 1)
+
+    def _iter_bytes():
+        with open(artifact.path, "rb") as fh:
+            fh.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = fh.read(min(_STREAM_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        _iter_bytes(),
+        status_code=status_code,
+        headers=headers,
+        media_type=artifact.mime_type,
+    )
 
 
 @router.get("/entities")
