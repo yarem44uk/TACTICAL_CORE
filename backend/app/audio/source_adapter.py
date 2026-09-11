@@ -33,6 +33,7 @@ from app.audio.decoder import AudioDecoder
 from app.audio.flow_router import FlowRouter
 from app.audio.multicast_receiver import MulticastAudioReceiver
 from app.audio.orchestrator import segment_to_raw
+from app.audio.radio_event import RadioEventIntegrator
 from app.audio.recorder import TransmissionRecorder
 from app.audio.recording_config import RecordingConfig
 from app.audio.rtp_receiver import RtpPcmFrame, RtpReceiver
@@ -43,6 +44,7 @@ from app.audio.stt_seam import (
     build_transcriber,
 )
 from app.audio.stt_worker import SttJob, SttWorker
+from app.audio.transcript_enrichment import TranscriptEnrichmentEngine
 from app.contracts.audio import ITranscriber
 from app.event_sources.adapters.base_adapter import BaseEventSourceAdapter
 from app.event_sources.config.source_definition import SourceDefinition
@@ -80,6 +82,8 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         callsign_detector: CallsignDetector | None = None,
         recorder: TransmissionRecorder | None = None,
         stt_worker: SttWorker | None = None,
+        enrichment_engine: TranscriptEnrichmentEngine | None = None,
+        radio_event_integrator: RadioEventIntegrator | None = None,
     ) -> None:
         super().__init__()
         self._definition = definition
@@ -96,6 +100,13 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         # DeterministicTestTranscriber fallback.
         self._transcriber = transcriber
         self._callsign_detector = callsign_detector or CallsignDetector()
+        # WO-066: optional final-radio-event seam wiring (enrichment ->
+        # integrator).  When a RadioEventIntegrator is injected, ``_on_transcript``
+        # drives the WO-065 final-radio-event producer instead of queueing the
+        # transcript as a separate event.  Backward-compatible: without an
+        # integrator the transcript raw is queued exactly as before.
+        self._enrichment_engine = enrichment_engine or TranscriptEnrichmentEngine()
+        self._radio_event_integrator = radio_event_integrator
         self._queue: list[dict[str, Any]] = []
         self._queue_lock = threading.Lock()
         self._receiver: Any = None
@@ -345,9 +356,33 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
         EventFactory -> EventPipeline path as the recording event, so it is a
         separate, append-only canonical event (never an UPDATE of the recording
         event).
+
+        WO-066 (production final-radio-event seam): when a
+        ``RadioEventIntegrator`` is injected, the transcript is NOT queued as a
+        separate event.  Instead it is run through the WO-064 enrichment seam
+        and the WO-065 integrator to produce the canonical final radio-event RAW,
+        which is queued (exactly one transcript -> enrichment -> final-event
+        transition; no duplicate processing).  Without an injected integrator
+        the transcript raw is queued as before (backward-compatible).
         """
+        if self._radio_event_integrator is None:
+            with self._queue_lock:
+                self._queue.append(raw)
+            return
+        try:
+            enrichment = self._enrichment_engine.enrich(raw)
+            final_raw = self._radio_event_integrator.build_raw(enrichment)
+        except Exception as exc:  # noqa: BLE001 - isolate a bad transcript
+            logger.warning(
+                "MulticastAudioSourceAdapter '%s' final-radio-event integration "
+                "failed for %s: %s",
+                self._definition.name,
+                raw.get("content_id"),
+                exc,
+            )
+            return
         with self._queue_lock:
-            self._queue.append(raw)
+            self._queue.append(final_raw)
 
     @property
     def _recorder(self) -> TransmissionRecorder | None:
@@ -381,12 +416,24 @@ class MulticastAudioSourceAdapter(BaseEventSourceAdapter):
 
 def make_multicast_audio_adapter(
     definition: SourceDefinition,
+    *,
+    enrichment_engine: TranscriptEnrichmentEngine | None = None,
+    radio_event_integrator: RadioEventIntegrator | None = None,
 ) -> MulticastAudioSourceAdapter:
     """Adapter builder compatible with ``AdapterFactory.register_type``.
 
     Returns a configured, unstarted :class:`MulticastAudioSourceAdapter`.
+
+    ``enrichment_engine`` / ``radio_event_integrator`` are the WO-066 optional
+    production final-radio-event seam dependencies (injected by the production
+    composition so a derived transcript drives the WO-065 integrator rather
+    than being queued as a standalone transcript event).
     """
-    return MulticastAudioSourceAdapter(definition=definition)
+    return MulticastAudioSourceAdapter(
+        definition=definition,
+        enrichment_engine=enrichment_engine,
+        radio_event_integrator=radio_event_integrator,
+    )
 
 
 def _build_production_stt_worker(

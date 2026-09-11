@@ -78,6 +78,10 @@ class ProductionRuntime:
     # WO-027 — durable post-commit delivery dispatcher (None when the session
     # manager is not configured / runtime-only composition).
     delivery_dispatcher: Optional["object"] = None
+    # WO-066 — the production composition's final radio-event integrator
+    # (constructed by create_event_runtime(); exposed here so the production
+    # runtime can drive the WO-065 final-radio-event seam end-to-end).
+    radio_event_integrator: Optional["object"] = None
 
     # --- Convenience access to the canonical Event -> Plugin path ---------
 
@@ -308,11 +312,15 @@ def create_production_runtime(
             "legacy non-durable delivery path."
         )
 
-    factory = EventFactory(identity_resolver=EventIdentityResolver())
+    factory = (
+        event_runtime.event_factory
+        or EventFactory(identity_resolver=EventIdentityResolver())
+    )
     supervisor = AdapterSupervisor(factory, event_runtime.pipeline)
     return ProductionRuntime(
         event_runtime=event_runtime,
         event_factory=factory,
         supervisor=supervisor,
         delivery_dispatcher=delivery_dispatcher,
+        radio_event_integrator=event_runtime.radio_event_integrator,
     )

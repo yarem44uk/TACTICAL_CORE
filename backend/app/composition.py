@@ -52,6 +52,9 @@ from app.event.event import Event  # noqa: F401  (public type re-export)
 from app.event.event_types import EventType
 from app.event_pipeline.event_pipeline import EventPipeline
 from app.event_dispatcher.plugin_dispatcher import PluginDispatcher
+from app.audio.radio_event import RadioEventIntegrator
+from app.event_sources.factory.event_factory import EventFactory
+from app.event_sources.identity.event_identity import EventIdentityResolver
 from app.plugins.manager.plugin_manager import PluginManager, get_plugin_manager
 from app.database.session import get_session_manager
 from app.entity_manager import EntityManager
@@ -115,6 +118,8 @@ class EventRuntime:
     observation_service: Optional["object"] = None
     relation_repository: Optional["object"] = None
     delivery_dispatcher: Optional["object"] = None
+    event_factory: Optional[EventFactory] = None
+    radio_event_integrator: Optional[RadioEventIntegrator] = None
 
 
 def create_event_runtime(
@@ -411,6 +416,22 @@ def create_event_runtime(
             repository=repository,
         )
 
+    # WO-066 — production composition wiring for the final radio event seam.
+    #
+    # The production composition constructs and owns the canonical identity
+    # resolver, the EventFactory (WO-013-002, with the deterministic WO-025
+    # identity resolver) and the RadioEventIntegrator (WO-065).  This makes the
+    # production composition reference the final radio-event producer (which was
+    # previously only a class definition, never constructed in production) and
+    # lets the canonical runtime path (source adapter -> final RAW producer ->
+    # AdapterRuntime -> EventFactory -> EventPipeline -> Observation) be
+    # exercised end-to-end.  The integrator remains a LEAF producer: it never
+    # constructs an Event, never persists an Observation, and never bypasses
+    # EventFactory / EventPipeline (CONTRACT-2).
+    identity_resolver = EventIdentityResolver()
+    event_factory = EventFactory(identity_resolver=identity_resolver)
+    radio_event_integrator = RadioEventIntegrator(identity_resolver=identity_resolver)
+
     return EventRuntime(
         pipeline=pipeline,
         plugin_manager=manager,
@@ -427,6 +448,8 @@ def create_event_runtime(
         observation_service=observation_service,
         relation_repository=relation_repository,
         delivery_dispatcher=delivery_dispatcher,
+        event_factory=event_factory,
+        radio_event_integrator=radio_event_integrator,
     )
 
 
