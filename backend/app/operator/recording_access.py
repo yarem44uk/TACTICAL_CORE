@@ -40,6 +40,11 @@ _READ_CHUNK = 1 << 16
 # ``bytes=-suffix``.
 _RANGE_RE = re.compile(r"^\s*(\d*)-(\d*)\s*$")
 
+# A valid SHA-256 hex digest is exactly 64 lowercase/uppercase hex chars.
+# Anything else (missing, empty, truncated, padded, non-hex, whitespace) is a
+# malformed stored hash and must fail closed.
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
 
 class RecordingAccessError(Exception):
     """Base error for recording evidence access."""
@@ -154,11 +159,16 @@ class RecordingAccess:
     def resolve(self, recording_id: str) -> RecordingArtifact:
         """Resolve ``recording_id`` to a verified, confined WAV artifact.
 
+        The stored SHA-256 is mandatory: a missing, ``None``, empty, or
+        malformed stored hash fails closed (``RecordingIntegrityError``) and NO
+        media byte is exposed, even if the on-disk artifact is intact.
+
         Raises:
             RecordingNotFoundError: identity unknown / no recording metadata.
             RecordingPathEscapeError: resolved path escapes the archive root.
             RecordingUnavailableError: artifact absent or not a regular file.
-            RecordingIntegrityError: actual SHA-256 does not match stored hash.
+            RecordingIntegrityError: stored SHA-256 missing/malformed, or the
+                actual artifact SHA-256 does not match the stored hash.
         """
         if not recording_id or not isinstance(recording_id, str):
             raise RecordingNotFoundError("invalid recording identity")
@@ -177,14 +187,13 @@ class RecordingAccess:
             raise RecordingUnavailableError("recording artifact missing")
         size = os.path.getsize(resolved)
 
-        stored_sha = metadata.get("sha256")
         actual_sha = self._sha256(resolved)
-        if stored_sha:
-            # Constant-time-ish comparison of the two hex digests.  This is an
-            # integrity gate, not a security comparison, but we use a length- and
-            # value-safe compare so a mismatch is never silently accepted.
-            if not _safe_hex_compare(stored_sha, actual_sha):
-                raise RecordingIntegrityError("recording artifact integrity mismatch")
+        # Mandatory fail-closed integrity gate: NO verified stored SHA-256 means
+        # NO media bytes are exposed.  A missing, empty, malformed, or
+        # non-verifiable stored hash is refused BEFORE any byte is served, even
+        # if the on-disk bytes happen to be intact.
+        stored_sha = metadata.get("sha256")
+        self._verify_integrity(stored_sha, actual_sha)
 
         return RecordingArtifact(
             recording_id=recording_id,
@@ -222,6 +231,39 @@ class RecordingAccess:
             for chunk in iter(lambda: fh.read(_SHA_CHUNK), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    @staticmethod
+    def _verify_integrity(stored_sha: object, actual_sha: str) -> None:
+        """Fail-closed SHA-256 integrity verification.
+
+        The stored hash MUST be a well-formed SHA-256 digest: exactly 64 hex
+        characters (lower- or upper-case) with no surrounding or embedded
+        whitespace.  Anything else — missing key, ``None``, empty string,
+        truncated/padded value, non-hex characters, whitespace-corrupted value
+        — is a malformed stored hash and is refused
+        (``RecordingIntegrityError``), so NO media byte is ever exposed without
+        a verified stored digest.  The stored value is validated as-is (not
+        stripped), so a whitespace-corrupted digest cannot be silently
+        "repaired" into an accepted one.
+
+        For a valid stored digest, the actual on-disk artifact is hashed and
+        compared; a mismatch is refused.  The stored hash is never rewritten and
+        metadata is never mutated — this is an access-time verification gate.
+
+        Raises:
+            RecordingIntegrityError: stored hash missing/malformed, or the
+                actual digest does not match the stored digest.
+        """
+        if not isinstance(stored_sha, str):
+            raise RecordingIntegrityError(
+                "stored recording sha256 is missing or invalid"
+            )
+        if not _SHA256_RE.fullmatch(stored_sha):
+            raise RecordingIntegrityError(
+                "stored recording sha256 is missing or invalid"
+            )
+        if not _safe_hex_compare(stored_sha, actual_sha):
+            raise RecordingIntegrityError("recording artifact integrity mismatch")
 
 
 def _safe_hex_compare(expected: str, actual: str) -> bool:

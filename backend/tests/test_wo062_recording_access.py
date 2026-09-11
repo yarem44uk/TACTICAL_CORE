@@ -143,6 +143,39 @@ def _persist_recording(
     return event.event_id, rt
 
 
+def _persist_recording_with_sha(db_url: str, fixture: dict, sha_mode: str) -> None:
+    """Persist a recording observation with a controlled stored ``sha256``.
+
+    ``sha_mode`` selects the stored digest recorded in the observation evidence:
+        * ``"valid"``    — ``FIXTURE_SHA256`` (matches the artifact).
+        * ``"missing"``  — the ``sha256`` key is removed entirely.
+        * ``"none"``     — ``sha256`` is ``None``.
+        * ``"empty"``    — ``sha256`` is the empty string.
+        * ``"malformed"``— ``sha256`` is ``"z"*64`` (64 non-hex chars).
+        * ``"wrong"``    — ``sha256`` is ``"0"*64`` (valid length, wrong digest).
+
+    The observation is persisted through the real production composition so the
+    canonical identity chain holds; the controlled digest is what the operator
+    endpoint must re-verify at access time.
+    """
+    rt = _compose(db_url)
+    raw = _recording_raw(fixture)
+    if sha_mode == "missing":
+        del raw["recording"]["sha256"]
+    elif sha_mode == "none":
+        raw["recording"]["sha256"] = None
+    elif sha_mode == "empty":
+        raw["recording"]["sha256"] = ""
+    elif sha_mode == "malformed":
+        raw["recording"]["sha256"] = "z" * 64
+    elif sha_mode == "wrong":
+        raw["recording"]["sha256"] = "0" * 64
+    else:
+        raw["recording"]["sha256"] = FIXTURE_SHA256
+    event = _event_for_recording(raw)
+    assert _process(rt, event) is True
+
+
 def _operator_client(mgr, *, token: str | None = None):
     """Build a real operator FastAPI app wired to the same session manager."""
     from fastapi.testclient import TestClient
@@ -334,6 +367,94 @@ def test_resolve_rejects_truncated_hash(archive_root):
         access.resolve("rec-1")
 
 
+# -- WO-062-C1: mandatory stored SHA-256 (fail-closed integrity gate) ---------
+
+
+def test_resolve_missing_sha_fails_closed(archive_root):
+    """No ``sha256`` key -> fail closed (no artifact served)."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    del meta["sha256"]
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    with pytest.raises(RecordingIntegrityError):
+        access.resolve("rec-1")
+
+
+def test_resolve_none_sha_fails_closed(archive_root):
+    """``sha256 is None`` -> fail closed."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    meta["sha256"] = None
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    with pytest.raises(RecordingIntegrityError):
+        access.resolve("rec-1")
+
+
+def test_resolve_empty_sha_fails_closed(archive_root):
+    """``sha256 == ""`` -> fail closed."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    meta["sha256"] = ""
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    with pytest.raises(RecordingIntegrityError):
+        access.resolve("rec-1")
+
+
+@pytest.mark.parametrize(
+    "bad_sha",
+    [
+        "abc",                     # too short
+        "z" * 64,                  # correct length, non-hex
+        "0" * 65,                  # too long
+        "  " + FIXTURE_SHA256,     # leading whitespace (corrupted)
+        FIXTURE_SHA256 + " ",      # trailing whitespace (corrupted)
+        "g" * 64,                  # non-hex, correct length
+        FIXTURE_SHA256[:-1] + " ",  # internal/corrupted char
+    ],
+)
+def test_resolve_malformed_sha_fails_closed(archive_root, bad_sha):
+    """Any malformed stored hash -> fail closed, no media bytes exposed."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    meta["sha256"] = bad_sha
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    with pytest.raises(RecordingIntegrityError):
+        access.resolve("rec-1")
+
+
+def test_resolve_valid_matching_sha_serves(archive_root):
+    """A correct 64-hex stored hash matching the artifact is served."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    artifact = access.resolve("rec-1")
+    assert artifact.sha256 == FIXTURE_SHA256
+    assert artifact.size == FIXTURE_SIZE
+    assert artifact.mime_type == "audio/wav"
+
+
+def test_resolve_valid_length_wrong_sha_fails_closed(archive_root):
+    """A valid-length (64-hex) but incorrect digest -> fail closed."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    wrong = hashlib.sha256(b"definitely-wrong").hexdigest()  # 64 hex, != FIXTURE_SHA256
+    assert wrong != FIXTURE_SHA256
+    meta["sha256"] = wrong
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    with pytest.raises(RecordingIntegrityError):
+        access.resolve("rec-1")
+
+
+def test_resolve_uppercase_sha_matching_serves(archive_root):
+    """Uppercase hex stored digest of the correct value is accepted."""
+    fixture = _recording_fixture(archive_root, "rec-1")
+    meta = _recording_raw(fixture)["recording"]
+    meta["sha256"] = FIXTURE_SHA256.upper()
+    access = RecordingAccess(archive_root, _fake_resolver(meta))
+    artifact = access.resolve("rec-1")
+    assert artifact.sha256 == FIXTURE_SHA256
+
+
 # ---------------------------------------------------------------------------
 # Integration — authenticated operator endpoint
 # ---------------------------------------------------------------------------
@@ -442,6 +563,33 @@ def test_recording_corrupted_artifact_rejected(file_db, archive_root, recording)
     assert resp.status_code == 404, resp.text
     # No partial media body is delivered.
     assert resp.content == b"" or resp.headers.get("content-type", "").startswith("application/json")
+    _reset()
+
+
+@pytest.mark.parametrize("sha_mode", ["missing", "none", "empty", "malformed", "wrong"])
+def test_recording_invalid_stored_sha_rejected(file_db, archive_root, recording, sha_mode):
+    """A missing/None/empty/malformed/wrong stored SHA-256 yields NO media bytes.
+
+    The endpoint must fail closed: an unverifiable stored digest means the
+    artifact is refused (safe 404) with no audio body and no filesystem path
+    leakage.
+    """
+    mgr = configure_session_manager(_url(file_db))
+    Base.metadata.create_all(mgr.engine)
+    _persist_recording_with_sha(_url(file_db), recording, sha_mode)
+    client = _operator_client(mgr)
+    resp = client.get(f"/api/v1/operator/recordings/{recording['recording_id']}")
+    assert resp.status_code == 404, f"{sha_mode}: {resp.text}"
+    body = resp.json()
+    assert body["error_type"] == "NotFoundError", f"{sha_mode}: {resp.text}"
+    # No audio body: the response is a JSON error, not a media payload.
+    assert not resp.headers.get("content-type", "").startswith("audio/wav"), sha_mode
+    assert resp.content != FIXTURE_BYTES, sha_mode
+    # No filesystem path / archive root leakage.
+    assert "wav_path" not in resp.text, sha_mode
+    assert "archive" not in resp.text, sha_mode
+    assert "/etc" not in resp.text, sha_mode
+    assert ".wav" not in resp.text, sha_mode
     _reset()
 
 
