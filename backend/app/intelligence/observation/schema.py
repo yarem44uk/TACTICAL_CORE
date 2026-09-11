@@ -116,6 +116,12 @@ class ObservationCreate(BaseModel):
         description="Confidence supplied by the source",
     )
 
+    occurred_at: Optional[datetime] = Field(
+        default=None,
+        description="Canonical event occurred_at (event time, distinct from the "
+        "ingestion timestamp). Populated from the canonical Event timestamp.",
+    )
+
     tags: List[str] = Field(
         default_factory=list,
         description="Tags for categorization",

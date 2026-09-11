@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import JSON, String, Text, Index, UniqueConstraint
+from sqlalchemy import JSON, String, Text, DateTime, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import BaseModel
@@ -77,6 +77,17 @@ class Observation(BaseModel):
         default=lambda: datetime.now(timezone.utc),
     )
     """System timestamp when observation was created (immutable)."""
+
+    # WO-060 — event-time (occurrence).  Distinct from ``timestamp`` (ingestion
+    # time).  Populated from the canonical Event's occurred_at at creation so
+    # the observation read model can be ordered/filtered by event time.  Null
+    # only on rows created before this column existed (pre-migration).
+    occurred_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    """Canonical event occurred_at (immutable); event time, not ingestion time."""
 
     # Source identification
     source: Mapped[str] = mapped_column(
@@ -167,6 +178,7 @@ class Observation(BaseModel):
         return {
             "id": str(self.id),
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "occurred_at": self.occurred_at.isoformat() if self.occurred_at else None,
             "source": self.source,
             "source_type": self.source_type,
             "observation_type": self.observation_type,
@@ -209,6 +221,7 @@ class Observation(BaseModel):
         return cls(
             id=observation_id or uuid.uuid4(),
             timestamp=datetime.now(timezone.utc),
+            occurred_at=observation_create.occurred_at,
             source=observation_create.source,
             source_type=observation_create.source_type,
             observation_type=observation_create.observation_type,

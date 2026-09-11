@@ -56,6 +56,15 @@ def _parse_limit(value: Optional[int]) -> int:
     return value
 
 
+def _parse_offset(value: Optional[int]) -> int:
+    """Validate/normalise the offset query parameter."""
+    if value is None:
+        return 0
+    if value < 0:
+        raise InvalidRequestError("offset must be a non-negative integer")
+    return value
+
+
 def _parse_time(value: Optional[str], name: str) -> Optional[datetime]:
     """Parse an ISO-8601 timestamp query parameter (naive treated as UTC)."""
     if value is None or value == "":
@@ -305,6 +314,40 @@ def list_entities(
     """GET /api/v1/operator/entities — active durable entities (by type)."""
     service: OperatorService = request.app.state.operator_service
     result = service.list_entities(entity_type=entity_type)
+    return JSONResponse(result)
+
+
+@router.get("/observations")
+def list_observations(
+    request: Request,
+    source: Optional[str] = Query(default=None),
+    observation_type: Optional[str] = Query(default=None),
+    from_time: Optional[str] = Query(default=None),
+    to_time: Optional[str] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    offset: Optional[int] = Query(default=None),
+) -> JSONResponse:
+    """GET /api/v1/operator/observations — observations ordered by event time.
+
+    WO-060 read-model endpoint.  Observations are ordered by ``occurred_at``
+    (canonical event time) DESC with deterministic tie-breaking, distinct from
+    the ingestion ``timestamp``.  Query parameters:
+      source, observation_type, from_time, to_time (ISO-8601, on occurred_at),
+      limit (default 50), offset (default 0).
+
+    ``radio.recording`` observations are visible here and their recording
+    evidence (wav/mp3 refs, sha256, duration, content_id) is preserved in
+    ``evidence_payload``.
+    """
+    service: OperatorService = request.app.state.operator_service
+    result = service.list_observations(
+        source=source,
+        observation_type=observation_type,
+        from_time=_parse_time(from_time, "from_time"),
+        to_time=_parse_time(to_time, "to_time"),
+        limit=_parse_limit(limit),
+        offset=_parse_offset(offset),
+    )
     return JSONResponse(result)
 
 

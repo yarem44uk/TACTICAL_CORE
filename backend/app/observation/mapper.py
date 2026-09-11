@@ -138,6 +138,9 @@ class EventToObservationMapper:
             provenance=provenance,
             source_confidence=confidence,
             tags=self._extract_tags(event, mapping),
+            # WO-060 — preserve the canonical event occurred_at as a queryable,
+            # event-time field distinct from the ingestion ``timestamp``.
+            occurred_at=event.timestamp,
         )
 
         logger.debug(

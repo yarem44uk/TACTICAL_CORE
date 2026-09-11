@@ -271,6 +271,58 @@ def _durable_plugin_delivery_ledger(manager: DatabaseSessionManager, session: "S
     )
 
 
+def _observation_occurred_at(manager: DatabaseSessionManager, session: "Session") -> None:
+    """Revision-5 operation: add the WO-060 ``occurred_at`` column to ``observations``.
+
+    WO-060 introduces a queryable, event-time ``occurred_at`` field on the
+    Observation read model, distinct from the ingestion ``timestamp``.  The
+    ``observations`` table already exists in production (created by the WO-021
+    revision-1 ``create_all`` bootstrap), so a bare ``create_all`` would NEVER
+    add this column.  This migration performs a genuine OLD -> NEW delta:
+
+      * REAL DDL — ``ALTER TABLE observations ADD COLUMN occurred_at DATETIME``
+        executed against the active migration transaction (single owner);
+      * ATOMIC — runs inside the SAME transaction as the revision record;
+      * DETERMINISTIC / IDEMPOTENT — guarded by a ``PRAGMA table_info`` check so
+        a repeated run (or a fresh DB whose ``create_all`` already carries the
+        column) is a safe no-op;
+      * NON-DESTRUCTIVE — adds one nullable column + index only; no existing
+        column, row, identity, lifecycle, relation, or replay behaviour altered;
+      * SINGLE OWNER — runs through the SAME ``DatabaseSessionManager``.
+
+    ``occurred_at`` is nullable so pre-existing rows (created before the column)
+    are preserved.  New rows are populated at creation from the canonical Event
+    occurred_at (see ``Observation.from_observation_create`` / mapper).
+    """
+    from sqlalchemy import text as _text
+
+    # Guard: the ``observations`` table may not exist yet (no observations) ->
+    # nothing to alter.  A repeat of this migration is a safe no-op.
+    exists = session.execute(
+        _text(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='observations'"
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        return
+
+    # Idempotent column-add: only add ``occurred_at`` if it is absent.
+    cols = session.execute(_text("PRAGMA table_info(observations)")).fetchall()
+    names = {row[1] for row in cols}
+    if "occurred_at" not in names:
+        session.execute(
+            _text("ALTER TABLE observations ADD COLUMN occurred_at DATETIME")
+        )
+    # Ensure the chronology index is present (mirrors the ORM ``index=True``).
+    session.execute(
+        _text(
+            "CREATE INDEX IF NOT EXISTS ix_observations_occurred_at "
+            "ON observations (occurred_at)"
+        )
+    )
+
+
 # Ordered ascending by revision — the ONLY ordering authority.
 # To add a future revision, append a new Migration with a higher revision
 # number here.  Do not renumber or reorder existing entries.
@@ -290,6 +342,11 @@ MIGRATIONS: Tuple[Migration, ...] = (
         revision=4,
         name="durable_plugin_delivery_ledger",
         migrate=_durable_plugin_delivery_ledger,
+    ),
+    Migration(
+        revision=5,
+        name="observation_occurred_at",
+        migrate=_observation_occurred_at,
     ),
 )
 

@@ -289,6 +289,7 @@ class ObservationProcessor:
         obs_dict = {
             'id': observation.id,
             'timestamp': observation.timestamp,
+            'occurred_at': observation.occurred_at,
             'source': observation.source,
             'source_type': observation.source_type,
             'observation_type': observation.observation_type,

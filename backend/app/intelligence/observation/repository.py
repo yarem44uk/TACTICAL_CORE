@@ -15,6 +15,7 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import Session
 
 from app.database.repositories.base_repository import BaseRepository
+from app.database.session import DatabaseSessionManager, get_session_manager
 from app.intelligence.observation.model import Observation
 
 
@@ -255,3 +256,179 @@ class ObservationRepository(BaseRepository[Observation]):
 
         result = self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # WO-060 — deterministic, event-time (occurred_at) chronology read model.
+    # ------------------------------------------------------------------
+    # The operator read path must order observations by EVENT time
+    # (``occurred_at``), not ingestion time (``timestamp``).  Ordering is fully
+    # deterministic: ``occurred_at`` DESC, then ``timestamp`` DESC, then
+    # ``id`` DESC (the UUID id is a unique tie-breaker, so ties on event time
+    # never produce a non-deterministic order).  NULL ``occurred_at`` (rows
+    # created before the WO-060 column existed) sorts last in DESC (SQLite
+    # treats NULL as smallest), so pre-existing rows never mask newer events.
+
+    def list_chronological(
+        self,
+        *,
+        source: Optional[str] = None,
+        observation_type: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Observation]:
+        """Return observations ordered by event time (``occurred_at`` DESC).
+
+        Args:
+            source: optional source filter.
+            observation_type: optional observation-type filter.
+            from_time: optional lower bound on ``occurred_at`` (inclusive).
+            to_time: optional upper bound on ``occurred_at`` (inclusive).
+            limit: maximum number to return.
+            offset: number to skip (offset pagination; deterministic ordering).
+
+        Returns:
+            List of observations in deterministic event-time order.
+        """
+        stmt = select(Observation).where(
+            Observation.is_deleted == False  # noqa: E712
+        )
+        if source is not None:
+            stmt = stmt.where(Observation.source == source)
+        if observation_type is not None:
+            stmt = stmt.where(Observation.observation_type == observation_type)
+        if from_time is not None:
+            stmt = stmt.where(Observation.occurred_at >= from_time)
+        if to_time is not None:
+            stmt = stmt.where(Observation.occurred_at <= to_time)
+        stmt = stmt.order_by(
+            Observation.occurred_at.desc(),
+            Observation.timestamp.desc(),
+            Observation.id.desc(),
+        ).offset(offset).limit(limit)
+        result = self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    def count_chronological(
+        self,
+        *,
+        source: Optional[str] = None,
+        observation_type: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+    ) -> int:
+        """Count observations matching the WO-060 chronological filters.
+
+        Args:
+            source: optional source filter.
+            observation_type: optional observation-type filter.
+            from_time: optional lower bound on ``occurred_at`` (inclusive).
+            to_time: optional upper bound on ``occurred_at`` (inclusive).
+
+        Returns:
+            Count of matching non-deleted observations.
+        """
+        stmt = select(func.count(Observation.id)).where(
+            Observation.is_deleted == False  # noqa: E712
+        )
+        if source is not None:
+            stmt = stmt.where(Observation.source == source)
+        if observation_type is not None:
+            stmt = stmt.where(Observation.observation_type == observation_type)
+        if from_time is not None:
+            stmt = stmt.where(Observation.occurred_at >= from_time)
+        if to_time is not None:
+            stmt = stmt.where(Observation.occurred_at <= to_time)
+        result = self.session.execute(stmt)
+        return int(result.scalar_one())
+
+
+class SessionManagerObservationRepository:
+    """Thread-safe, session-manager-backed read repository for the operator
+    observation feed (WO-060).
+
+    The production ``ObservationRepository`` holds a single ``Session`` and is
+    used by the single-threaded production observation pipeline.  The operator
+    process (ADR-011) is a separate, multi-threaded read-only consumer and MUST
+    NOT share that single session.  This repository mirrors the established
+    session-manager-backed pattern (``SQLAlchemyEventRepository`` /
+    ``SQLAlchemyEntityRepository``): it creates a fresh ``Session`` per read via
+    ``session_manager.session(commit=False)``, so it is safe to use from any
+    thread and never leaks a session.
+
+    Read-only: no insert / update / delete / commit of application state.
+    """
+
+    def __init__(
+        self,
+        session_manager: Optional[DatabaseSessionManager] = None,
+    ) -> None:
+        self._session_manager = session_manager
+
+    @property
+    def session_manager(self) -> DatabaseSessionManager:
+        if self._session_manager is None:
+            return get_session_manager()
+        return self._session_manager
+
+    def list_chronological(
+        self,
+        *,
+        source: Optional[str] = None,
+        observation_type: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Observation]:
+        """Return observations ordered by event time (``occurred_at`` DESC).
+
+        Deterministic tie-breaking (``occurred_at`` DESC, ``timestamp`` DESC,
+        ``id`` DESC); NULL ``occurred_at`` sorts last.  Filters by source /
+        observation_type / occurred_at time range.  Each read uses a fresh
+        session (thread-safe).
+        """
+        stmt = select(Observation).where(
+            Observation.is_deleted == False  # noqa: E712
+        )
+        if source is not None:
+            stmt = stmt.where(Observation.source == source)
+        if observation_type is not None:
+            stmt = stmt.where(Observation.observation_type == observation_type)
+        if from_time is not None:
+            stmt = stmt.where(Observation.occurred_at >= from_time)
+        if to_time is not None:
+            stmt = stmt.where(Observation.occurred_at <= to_time)
+        stmt = stmt.order_by(
+            Observation.occurred_at.desc(),
+            Observation.timestamp.desc(),
+            Observation.id.desc(),
+        ).offset(offset).limit(limit)
+        with self.session_manager.session(commit=False) as session:
+            result = session.execute(stmt)
+            return list(result.scalars().all())
+
+    def count_chronological(
+        self,
+        *,
+        source: Optional[str] = None,
+        observation_type: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+    ) -> int:
+        """Count observations matching the WO-060 chronological filters."""
+        stmt = select(func.count(Observation.id)).where(
+            Observation.is_deleted == False  # noqa: E712
+        )
+        if source is not None:
+            stmt = stmt.where(Observation.source == source)
+        if observation_type is not None:
+            stmt = stmt.where(Observation.observation_type == observation_type)
+        if from_time is not None:
+            stmt = stmt.where(Observation.occurred_at >= from_time)
+        if to_time is not None:
+            stmt = stmt.where(Observation.occurred_at <= to_time)
+        with self.session_manager.session(commit=False) as session:
+            result = session.execute(stmt)
+            return int(result.scalar_one())

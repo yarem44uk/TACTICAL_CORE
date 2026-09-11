@@ -40,6 +40,10 @@ from app.event.event import Event
 from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
+from app.intelligence.observation.model import Observation
+from app.intelligence.observation.repository import (
+    SessionManagerObservationRepository,
+)
 from app.operator.severity import (
     Severity,
     classify,
@@ -112,6 +116,30 @@ def _normalize_severity(value: str) -> str:
     return normalized
 
 
+def _observation_to_dict(obs: Observation) -> Dict[str, Any]:
+    """Serialize one Observation for the operator read contract (ISO-8601 UTC).
+
+    Deterministic and JSON-serialisable.  ``occurred_at`` is the canonical event
+    time (event time); ``timestamp`` is the observation ingestion time.  The
+    full ``evidence_payload`` is preserved so recording identity / evidence
+    references (WO-062) survive the read model.  Read-only; never mutates state.
+    """
+    return {
+        "id": str(obs.id),
+        "occurred_at": obs.occurred_at.isoformat() if obs.occurred_at else None,
+        "timestamp": obs.timestamp.isoformat() if obs.timestamp else None,
+        "source": obs.source,
+        "source_type": obs.source_type,
+        "observation_type": obs.observation_type,
+        "immutable_id": obs.immutable_id,
+        "processing_status": obs.processing_status,
+        "evidence_payload": obs.evidence_payload,
+        "provenance": obs.provenance,
+        "tags": obs.tags,
+        "source_confidence": obs.source_confidence,
+    }
+
+
 class OperatorService:
     """Read-only query facade over the authoritative durable repositories.
 
@@ -126,10 +154,12 @@ class OperatorService:
         event_repository: SQLAlchemyEventRepository,
         entity_repository: SQLAlchemyEntityRepository,
         relation_repository: SQLAlchemyRelationRepository,
+        observation_repository: Optional[SessionManagerObservationRepository] = None,
     ) -> None:
         self._events = event_repository
         self._entities = entity_repository
         self._relations = relation_repository
+        self._observations = observation_repository
 
     # -- events --------------------------------------------------------------
 
@@ -260,6 +290,67 @@ class OperatorService:
                 "authoritative relation store unavailable"
             ) from exc
         return {"entity_id": entity_id, "relations": rows}
+
+    # -- observations (WO-060) ----------------------------------------------
+
+    def list_observations(
+        self,
+        *,
+        source: Optional[str] = None,
+        observation_type: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Return observations ordered deterministically by event time.
+
+        WO-060 read-model contract.  Observations are ordered by ``occurred_at``
+        DESC (event time), with deterministic tie-breaking, so the operator feed
+        distinguishes event time from ingestion time.  Supports filters by
+        ``source``, ``observation_type``, and an ``occurred_at`` time range, and
+        offset pagination.
+
+        Raises:
+            InvalidRequestError: invalid limit/offset (HTTP 400).
+            ReadDependencyUnavailableError: observation read dependency
+                unavailable (HTTP 503).
+        """
+        if self._observations is None:
+            raise ReadDependencyUnavailableError(
+                "observation read repository unavailable"
+            )
+        if limit < 1:
+            raise InvalidRequestError("limit must be a positive integer")
+        if offset < 0:
+            raise InvalidRequestError("offset must be a non-negative integer")
+        try:
+            rows = self._observations.list_chronological(
+                source=source,
+                observation_type=observation_type,
+                from_time=from_time,
+                to_time=to_time,
+                limit=limit,
+                offset=offset,
+            )
+            total = self._observations.count_chronological(
+                source=source,
+                observation_type=observation_type,
+                from_time=from_time,
+                to_time=to_time,
+            )
+        except InvalidRequestError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - translate to 503
+            raise ReadDependencyUnavailableError(
+                "authoritative observation store unavailable"
+            ) from exc
+        return {
+            "observations": [_observation_to_dict(o) for o in rows],
+            "total": int(total),
+            "offset": offset,
+            "limit": limit,
+        }
 
     # -- SSE realtime read layer (WO-037-04) ---------------------------------
 

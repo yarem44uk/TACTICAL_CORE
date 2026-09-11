@@ -487,14 +487,16 @@ def test_consumer_crash_after_side_effect_idempotent(file_db):
 
 
 def test_wo027_migration_is_registered_and_targets_revision(file_db):
-    """WO-027 adds the durable delivery outbox migration (revision 3)."""
+    """WO-027 adds the durable delivery outbox migration (revision 3); WO-060
+    adds the observation occurred_at migration (revision 5)."""
     from app.database.schema_migration import MIGRATIONS
 
     revs = [m.revision for m in MIGRATIONS]
-    assert TARGET_VERSION == 4
-    assert revs == [1, 2, 3, 4]
+    assert TARGET_VERSION == 5
+    assert revs == [1, 2, 3, 4, 5]
     assert MIGRATIONS[2].name == "durable_delivery_outbox"
     assert MIGRATIONS[3].name == "durable_plugin_delivery_ledger"
+    assert MIGRATIONS[4].name == "observation_occurred_at"
 
 
 def test_single_database_owner_preserved(file_db, repo, outbox):

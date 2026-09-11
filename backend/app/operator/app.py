@@ -36,6 +36,9 @@ from app.entity_repository.sqlalchemy_entity_repository import (
 from app.event_repository.durable.sqlalchemy_event_repository import (
     SQLAlchemyEventRepository,
 )
+from app.intelligence.observation.repository import (
+    SessionManagerObservationRepository,
+)
 from app.operator.auth import (
     OperatorAuthGate,
     OperatorAuthMiddleware,
@@ -70,11 +73,21 @@ def _default_relation_repository() -> SQLAlchemyRelationRepository:
     return SQLAlchemyRelationRepository(session_manager=get_session_manager())
 
 
+def _default_observation_repository() -> SessionManagerObservationRepository:
+    # Lazy: the session manager is resolved on first read via the repository's
+    # ``session_manager`` property, so app construction never fails when no
+    # global session manager is configured (e.g. operator tests that inject
+    # repositories directly).  In production the operator entrypoint configures
+    # the global session manager, so the observation feed is available.
+    return SessionManagerObservationRepository()
+
+
 def create_operator_app(
     *,
     event_repository: Optional[SQLAlchemyEventRepository] = None,
     entity_repository: Optional[SQLAlchemyEntityRepository] = None,
     relation_repository: Optional[SQLAlchemyRelationRepository] = None,
+    observation_repository: Optional[SessionManagerObservationRepository] = None,
     auth_gate: Optional[OperatorAuthGate] = None,
     title: str = "Tactical Core Operator API",
     version: str = "1.0.0",
@@ -85,6 +98,9 @@ def create_operator_app(
         event_repository: optional injected authoritative event repository.
         entity_repository: optional injected authoritative entity repository.
         relation_repository: optional injected authoritative relation repository.
+        observation_repository: optional injected observation read repository
+            (WO-060).  Defaults to a ``SessionManagerObservationRepository`` over
+            the global session manager.
         auth_gate: optional operator auth gate (WO-037-05). Defaults to a gate
             built from the ``OPERATOR_TOKEN`` environment variable. When no
             token is configured the gate is disabled (local dev / tests).
@@ -105,11 +121,14 @@ def create_operator_app(
         entity_repository = _default_entity_repository()
     if relation_repository is None:
         relation_repository = _default_relation_repository()
+    if observation_repository is None:
+        observation_repository = _default_observation_repository()
 
     service = OperatorService(
         event_repository=event_repository,
         entity_repository=entity_repository,
         relation_repository=relation_repository,
+        observation_repository=observation_repository,
     )
 
     app = FastAPI(title=title, version=version)
