@@ -229,3 +229,30 @@ pre.json { background: var(--panel-2); padding: 12px; border-radius: 6px; overfl
   font-size: 12px;
   margin-top: 2px;
 }
+
+
+/* WO-061 — chronological operational wall (new classes only; existing
+   Events/Entities appearance unchanged) */
+.wall-item {
+  cursor: pointer;
+}
+.wall-time {
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+}
+.wall-details {
+  margin: 6px 0 2px;
+}
+.wall-details summary {
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.wall-details .table {
+  margin-top: 6px;
+}
+.wall-unavailable {
+  border-color: var(--err);
+}

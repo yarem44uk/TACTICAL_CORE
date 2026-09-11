@@ -45,7 +45,7 @@ function applyToken() {
     ? "Authenticated — operator UI connected"
     : "No token — operator requests unauthenticated";
   loadHealth();
-  switchView(el("view-events").classList.contains("active") ? "events" : "entities");
+  switchView(currentView());
 }
 
 function logout() {
@@ -383,15 +383,191 @@ function loadRelations(entityId, etype, status, version, createdAt, updatedAt) {
     });
 }
 
+/* ---- chronological wall (WO-061) ----------------------------------------- */
+/* The Wall is a pure consumer of the WO-060 observation read model.  It issues
+   a single GET to /api/v1/operator/observations and renders the server's
+   deterministic occurred_at DESC order verbatim.  It never reorders, never
+   mutates, never opens a second event store, and never consumes the canonical
+   event stream. */
+
+var wallState = { offset: 0, limit: 50, total: 0, items: [] };
+
+function resetWall() {
+  wallState.offset = 0;
+  wallState.limit = 50;
+  wallState.total = 0;
+  wallState.items = [];
+}
+
+function wallTime(value) {
+  if (!value) return "time unavailable";
+  var s = String(value);
+  var t = s.indexOf("T");
+  return t !== -1 ? s.substring(t + 1, t + 9) : s;
+}
+
+function wallRecordingDetail(obs) {
+  var payload = obs.evidence_payload || {};
+  var raw = payload.raw_data || {};
+  var rec = raw.recording || payload.recording || null;
+  if (!rec) return "";
+  var rows = [];
+  function add(label, val) {
+    if (val !== undefined && val !== null && val !== "") {
+      rows.push("<tr><th>" + escapeHtml(label) + "</th><td>" + escapeHtml(String(val)) + "</td></tr>");
+    }
+  }
+  add("format", rec.format);
+  add("duration", rec.duration !== undefined ? rec.duration + " s" : null);
+  add("duration_ms", rec.duration_ms);
+  add("source", rec.source);
+  add("multicast_address", rec.multicast_address);
+  add("udp_port", rec.udp_port);
+  add("codec", rec.codec);
+  add("sample_rate", rec.sample_rate);
+  add("channels", rec.channels);
+  add("sha256", rec.sha256);
+  add("complete", rec.complete);
+  add("finalize_reason", rec.finalize_reason);
+  add("wav_path", rec.wav_path);
+  add("mp3_path", rec.mp3_path);
+  add("audio_recording_id", raw.audio_recording_id !== undefined ? raw.audio_recording_id : payload.audio_recording_id);
+  add("content_id", raw.content_id !== undefined ? raw.content_id : payload.content_id);
+  return '<details class="wall-details"><summary>Recording</summary>' +
+    '<table class="table">' + rows.join("") + "</table></details>";
+}
+
+function isRadioObservation(obs) {
+  var type = (obs.observation_type || "").toLowerCase();
+  var src = (obs.source || "").toLowerCase();
+  return type === "radio.recording" || type.indexOf("radio") !== -1 ||
+    src === "radio" || src.indexOf("radio") !== -1;
+}
+
+function wallRow(obs, idx) {
+  var id = obs.immutable_id || obs.id || "";
+  var type = obs.observation_type || obs.source_type || "observation";
+  var time = wallTime(obs.occurred_at);
+  var radio = isRadioObservation(obs);
+  var html = '<div class="feed-item wall-item" data-idx="' + idx + '">' +
+    '<div class="row-1">' +
+      '<span class="wall-time">' + escapeHtml(time) + "</span>" +
+      (radio ? '<span class="radio-label">RADIO</span>' : "") +
+      '<span class="etype">' + escapeHtml(type) + "</span>" +
+      '<span class="eid">' + escapeHtml(id) + "</span>" +
+    "</div>" +
+    '<div class="row-2">source: ' + escapeHtml(obs.source || "—") +
+      " &middot; status: " + escapeHtml(obs.processing_status || "—") +
+      " &middot; occurred_at: " + escapeHtml(obs.occurred_at || "time unavailable") +
+    "</div>";
+  if (radio) html += wallRecordingDetail(obs);
+  html += "</div>";
+  return html;
+}
+
+function loadObservations() {
+  var params = [];
+  var source = el("wl-source").value.trim();
+  var type = el("wl-type").value.trim();
+  if (source) params.push("source=" + encodeURIComponent(source));
+  if (type) params.push("observation_type=" + encodeURIComponent(type));
+  params.push("limit=" + wallState.limit);
+  params.push("offset=" + wallState.offset);
+  fetch(API + "/observations?" + params.join("&"), withAuth({ method: "GET" }))
+    .then(function (res) {
+      return res.json().then(function (data) { return { status: res.status, data: data }; });
+    })
+    .then(function (out) {
+      var feed = el("wall-feed");
+      if (isAuthFailure(out.status)) { showAuthRequired(); return; }
+      if (out.status !== 200) {
+        feed.classList.add("wall-unavailable");
+        showError(feed, out.status, out.data.detail);
+        updateWallPager();
+        return;
+      }
+      feed.classList.remove("wall-unavailable");
+      var obsList = out.data.observations || [];
+      wallState.total = out.data.total || 0;
+      if (wallState.offset === 0) wallState.items = [];
+      wallState.items = wallState.items.concat(obsList);
+      if (wallState.items.length === 0) {
+        feed.innerHTML = '<div class="detail-msg">No observations available.</div>';
+      } else {
+        feed.innerHTML = wallState.items.map(wallRow).join("");
+        Array.prototype.forEach.call(feed.querySelectorAll(".feed-item"), function (node) {
+          node.addEventListener("click", function () {
+            var idx = parseInt(node.getAttribute("data-idx"), 10);
+            openObservationDetail(wallState.items[idx]);
+          });
+        });
+      }
+      wallState.offset = wallState.offset + obsList.length;
+      updateWallPager();
+    })
+    .catch(function () {
+      var feed = el("wall-feed");
+      feed.classList.add("wall-unavailable");
+      feed.innerHTML = '<div class="detail-msg err">Unavailable</div>';
+      updateWallPager();
+    });
+}
+
+function updateWallPager() {
+  el("wl-load-more").disabled = !(wallState.offset < wallState.total);
+}
+
+function openObservationDetail(obs) {
+  if (!obs) return;
+  var id = obs.immutable_id || obs.id || "";
+  el("detail-title").textContent = "Observation " + id;
+  var fields = [
+    ["id", obs.id],
+    ["immutable_id", obs.immutable_id],
+    ["occurred_at", obs.occurred_at],
+    ["timestamp", obs.timestamp],
+    ["source", obs.source],
+    ["source_type", obs.source_type],
+    ["observation_type", obs.observation_type],
+    ["processing_status", obs.processing_status],
+    ["source_confidence", obs.source_confidence],
+    ["provenance", obs.provenance],
+    ["tags", obs.tags]
+  ];
+  var rows = fields
+    .map(function (f) {
+      var v = f[1];
+      var shown = (v === undefined || v === null) ? "—" : String(v);
+      if (typeof v === "object") shown = JSON.stringify(v);
+      return "<tr><th>" + escapeHtml(f[0]) + "</th><td>" + escapeHtml(shown) + "</td></tr>";
+    })
+    .join("");
+  el("detail-body").innerHTML =
+    "<table class=\"table\">" + rows + "</table>" +
+    "<h3>Evidence</h3><pre class=\"json\">" +
+    escapeHtml(JSON.stringify(obs.evidence_payload || {}, null, 2)) + "</pre>";
+  el("detail-modal").hidden = false;
+}
+
 /* ---- navigation / wiring ------------------------------------------------- */
 
+function currentView() {
+  if (el("view-events").classList.contains("active")) return "events";
+  if (el("view-wall").classList.contains("active")) return "wall";
+  return "entities";
+}
+
 function switchView(name) {
-  var events = name === "events";
-  el("view-events").classList.toggle("active", events);
-  el("view-entities").classList.toggle("active", !events);
-  el("tab-events").classList.toggle("active", events);
-  el("tab-entities").classList.toggle("active", !events);
-  if (events) loadEvents();
+  var isEvents = name === "events";
+  var isWall = name === "wall";
+  el("view-events").classList.toggle("active", isEvents);
+  el("view-wall").classList.toggle("active", isWall);
+  el("view-entities").classList.toggle("active", !isEvents && !isWall);
+  el("tab-events").classList.toggle("active", isEvents);
+  el("tab-wall").classList.toggle("active", isWall);
+  el("tab-entities").classList.toggle("active", !isEvents && !isWall);
+  if (isEvents) loadEvents();
+  else if (isWall) loadObservations();
   else loadEntities();
 }
 
@@ -402,12 +578,17 @@ function wire() {
     if (e.key === "Enter") { applyToken(); }
   });
   el("tab-events").addEventListener("click", function () { switchView("events"); });
+  el("tab-wall").addEventListener("click", function () { switchView("wall"); });
   el("tab-entities").addEventListener("click", function () { switchView("entities"); });
   el("refresh-btn").addEventListener("click", function () {
     loadHealth();
-    if (el("view-events").classList.contains("active")) loadEvents();
+    var v = currentView();
+    if (v === "events") loadEvents();
+    else if (v === "wall") { resetWall(); loadObservations(); }
     else loadEntities();
   });
+  el("wl-apply").addEventListener("click", function () { resetWall(); loadObservations(); });
+  el("wl-load-more").addEventListener("click", function () { loadObservations(); });
   el("ev-apply").addEventListener("click", function () {
     evState.cursor = null;
     loadEvents();

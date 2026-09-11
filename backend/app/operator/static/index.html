@@ -25,6 +25,7 @@
 
   <nav class="view-tabs" aria-label="Views">
     <button id="tab-events" class="tab active" type="button">Events</button>
+    <button id="tab-wall" class="tab" type="button">Wall</button>
     <button id="tab-entities" class="tab" type="button">Entities</button>
   </nav>
 
@@ -42,6 +43,19 @@
       <div class="pager">
         <button id="ev-prev" class="btn" type="button" disabled>Previous</button>
         <button id="ev-next" class="btn" type="button" disabled>Next</button>
+      </div>
+    </section>
+
+    <!-- WALL VIEW (WO-061) -->
+    <section id="view-wall" class="view">
+      <div class="toolbar">
+        <input id="wl-source" class="input" type="text" placeholder="source" />
+        <input id="wl-type" class="input" type="text" placeholder="observation_type" />
+        <button id="wl-apply" class="btn" type="button">Apply</button>
+      </div>
+      <div id="wall-feed" class="feed">Loading…</div>
+      <div class="pager">
+        <button id="wl-load-more" class="btn" type="button">Load more</button>
       </div>
     </section>
 
