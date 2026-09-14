@@ -1,0 +1,24 @@
+{
+  "_README": [
+    "WO-067 — HUMAN GROUND-TRUTH SIDECAR (benchmark-only).",
+    "",
+    "Ground truth MUST be entered by a human reviewer listening to and reading the",
+    "accepted PRE-04 audio. Model output MUST NOT be copied in here. WER/CER and",
+    "callsign accuracy stay NOT MEASURED until entries exist.",
+    "",
+    "Rules:",
+    "  * candidate_id must match a manifest candidate_id exactly (msg_0001 ... msg_0067).",
+    "  * transcript: the human-verified words. Empty string or null = not yet entered.",
+    "  * callsign: only when the human reviewer actually heard one. Never guess.",
+    "  * reviewer / review_time: who entered it and when (auditable).",
+    "  * This file is IMMUTABLE once the benchmark is frozen; any revision must be",
+    "    recorded as a new version with a new 'version' value and a note.",
+    "",
+    "Example entry (delete before real use):",
+    "  {\"candidate_id\": \"msg_0001\", \"transcript\": \"<human-verified words>\",",
+    "   \"callsign\": null, \"reviewer\": \"<initials>\", \"review_time\": \"<ISO-8601>\"}"
+  ],
+  "version": "wo067-ground-truth-v0-empty",
+  "source": "HUMAN_REVIEW_PENDING — no human transcript has been entered yet",
+  "entries": []
+}

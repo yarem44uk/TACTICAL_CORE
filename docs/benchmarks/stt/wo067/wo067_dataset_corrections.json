@@ -1,0 +1,1200 @@
+{
+  "note": "WO-067 PRE-05: manifest timing is DERIVED from the authoritative PRE-04 WAVs and their RTP timestamps (stream t=0 = first audio packet of that stream's flow). duration_ms comes from the WAV frame count, which is the authoritative audio. PRE-04 metadata start/end differ for 66/67 candidates by a consistent 20 ms (a convention artefact) and msg_0019's duration_ms is additionally wrong by 20 ms because it inherited the obsolete PRE-03 gap padding. No audio was changed by this reconciliation.",
+  "source_pcap_sha256": "0c9a0716d904d025079ecba00c585dfcac699351917dc804dffb0b4d4cd1eb20",
+  "stream_origins": {
+    "S1": 8960,
+    "S2": 320
+  },
+  "corrections_count": 66,
+  "corrections": [
+    {
+      "candidate_id": "msg_0002",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 2420.0,
+        "end_time_ms": 4059.9999999999995,
+        "duration_ms": 1640
+      },
+      "derived": {
+        "start_time_ms": 2400.0,
+        "end_time_ms": 4040.0,
+        "duration_ms": 1640
+      },
+      "differences": [
+        "start 2420.0->2400.0",
+        "end 4059.9999999999995->4040.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0003",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 4560.0,
+        "end_time_ms": 7880.0,
+        "duration_ms": 3320
+      },
+      "derived": {
+        "start_time_ms": 4540.0,
+        "end_time_ms": 7860.0,
+        "duration_ms": 3320
+      },
+      "differences": [
+        "start 4560.0->4540.0",
+        "end 7880.0->7860.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0004",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 8340.0,
+        "end_time_ms": 11820.0,
+        "duration_ms": 3480
+      },
+      "derived": {
+        "start_time_ms": 8320.0,
+        "end_time_ms": 11800.0,
+        "duration_ms": 3480
+      },
+      "differences": [
+        "start 8340.0->8320.0",
+        "end 11820.0->11800.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0005",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 12400.0,
+        "end_time_ms": 16520.0,
+        "duration_ms": 4120
+      },
+      "derived": {
+        "start_time_ms": 12380.0,
+        "end_time_ms": 16500.0,
+        "duration_ms": 4120
+      },
+      "differences": [
+        "start 12400.0->12380.0",
+        "end 16520.0->16500.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0006",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 17000.0,
+        "end_time_ms": 25720.0,
+        "duration_ms": 8720
+      },
+      "derived": {
+        "start_time_ms": 16980.0,
+        "end_time_ms": 25700.0,
+        "duration_ms": 8720
+      },
+      "differences": [
+        "start 17000.0->16980.0",
+        "end 25720.0->25700.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0007",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 26240.0,
+        "end_time_ms": 28260.0,
+        "duration_ms": 2020
+      },
+      "derived": {
+        "start_time_ms": 26220.0,
+        "end_time_ms": 28240.0,
+        "duration_ms": 2020
+      },
+      "differences": [
+        "start 26240.0->26220.0",
+        "end 28260.0->28240.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0008",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 28660.0,
+        "end_time_ms": 30720.0,
+        "duration_ms": 2060
+      },
+      "derived": {
+        "start_time_ms": 28640.0,
+        "end_time_ms": 30700.0,
+        "duration_ms": 2060
+      },
+      "differences": [
+        "start 28660.0->28640.0",
+        "end 30720.0->30700.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0009",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 31280.0,
+        "end_time_ms": 31740.0,
+        "duration_ms": 460
+      },
+      "derived": {
+        "start_time_ms": 31260.0,
+        "end_time_ms": 31720.0,
+        "duration_ms": 460
+      },
+      "differences": [
+        "start 31280.0->31260.0",
+        "end 31740.0->31720.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0010",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 32340.000000000004,
+        "end_time_ms": 33480.0,
+        "duration_ms": 1140
+      },
+      "derived": {
+        "start_time_ms": 32320.0,
+        "end_time_ms": 33460.0,
+        "duration_ms": 1140
+      },
+      "differences": [
+        "start 32340.000000000004->32320.0",
+        "end 33480.0->33460.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0011",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 33780.0,
+        "end_time_ms": 34820.0,
+        "duration_ms": 1040
+      },
+      "derived": {
+        "start_time_ms": 33760.0,
+        "end_time_ms": 34800.0,
+        "duration_ms": 1040
+      },
+      "differences": [
+        "start 33780.0->33760.0",
+        "end 34820.0->34800.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0012",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 35220.0,
+        "end_time_ms": 39600.0,
+        "duration_ms": 4380
+      },
+      "derived": {
+        "start_time_ms": 35200.0,
+        "end_time_ms": 39580.0,
+        "duration_ms": 4380
+      },
+      "differences": [
+        "start 35220.0->35200.0",
+        "end 39600.0->39580.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0013",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 40200.0,
+        "end_time_ms": 43700.0,
+        "duration_ms": 3500
+      },
+      "derived": {
+        "start_time_ms": 40180.0,
+        "end_time_ms": 43680.0,
+        "duration_ms": 3500
+      },
+      "differences": [
+        "start 40200.0->40180.0",
+        "end 43700.0->43680.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0014",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 44020.0,
+        "end_time_ms": 45360.0,
+        "duration_ms": 1340
+      },
+      "derived": {
+        "start_time_ms": 44000.0,
+        "end_time_ms": 45340.0,
+        "duration_ms": 1340
+      },
+      "differences": [
+        "start 44020.0->44000.0",
+        "end 45360.0->45340.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0015",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 45880.0,
+        "end_time_ms": 46980.0,
+        "duration_ms": 1100
+      },
+      "derived": {
+        "start_time_ms": 45860.0,
+        "end_time_ms": 46960.0,
+        "duration_ms": 1100
+      },
+      "differences": [
+        "start 45880.0->45860.0",
+        "end 46980.0->46960.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0016",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 47640.0,
+        "end_time_ms": 49200.0,
+        "duration_ms": 1560
+      },
+      "derived": {
+        "start_time_ms": 47620.0,
+        "end_time_ms": 49180.0,
+        "duration_ms": 1560
+      },
+      "differences": [
+        "start 47640.0->47620.0",
+        "end 49200.0->49180.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0017",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 49660.0,
+        "end_time_ms": 52140.0,
+        "duration_ms": 2480
+      },
+      "derived": {
+        "start_time_ms": 49640.0,
+        "end_time_ms": 52120.0,
+        "duration_ms": 2480
+      },
+      "differences": [
+        "start 49660.0->49640.0",
+        "end 52140.0->52120.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0018",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 52420.0,
+        "end_time_ms": 53660.0,
+        "duration_ms": 1240
+      },
+      "derived": {
+        "start_time_ms": 52400.0,
+        "end_time_ms": 53640.0,
+        "duration_ms": 1240
+      },
+      "differences": [
+        "start 52420.0->52400.0",
+        "end 53660.0->53640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0019",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 53940.0,
+        "end_time_ms": 57880.0,
+        "duration_ms": 3940
+      },
+      "derived": {
+        "start_time_ms": 53920.0,
+        "end_time_ms": 57840.0,
+        "duration_ms": 3920
+      },
+      "differences": [
+        "start 53940.0->53920.0",
+        "end 57880.0->57840.0",
+        "duration 3940->3920"
+      ]
+    },
+    {
+      "candidate_id": "msg_0020",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 58220.0,
+        "end_time_ms": 60180.0,
+        "duration_ms": 1960
+      },
+      "derived": {
+        "start_time_ms": 58180.0,
+        "end_time_ms": 60140.0,
+        "duration_ms": 1960
+      },
+      "differences": [
+        "start 58220.0->58180.0",
+        "end 60180.0->60140.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0021",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 60640.0,
+        "end_time_ms": 62260.0,
+        "duration_ms": 1620
+      },
+      "derived": {
+        "start_time_ms": 60600.0,
+        "end_time_ms": 62220.0,
+        "duration_ms": 1620
+      },
+      "differences": [
+        "start 60640.0->60600.0",
+        "end 62260.0->62220.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0022",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 62720.0,
+        "end_time_ms": 63680.0,
+        "duration_ms": 960
+      },
+      "derived": {
+        "start_time_ms": 62680.0,
+        "end_time_ms": 63640.0,
+        "duration_ms": 960
+      },
+      "differences": [
+        "start 62720.0->62680.0",
+        "end 63680.0->63640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0023",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 63960.0,
+        "end_time_ms": 64440.0,
+        "duration_ms": 480
+      },
+      "derived": {
+        "start_time_ms": 63920.0,
+        "end_time_ms": 64400.0,
+        "duration_ms": 480
+      },
+      "differences": [
+        "start 63960.0->63920.0",
+        "end 64440.0->64400.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0024",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 64900.00000000001,
+        "end_time_ms": 66600.0,
+        "duration_ms": 1700
+      },
+      "derived": {
+        "start_time_ms": 64860.0,
+        "end_time_ms": 66560.0,
+        "duration_ms": 1700
+      },
+      "differences": [
+        "start 64900.00000000001->64860.0",
+        "end 66600.0->66560.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0025",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 67140.0,
+        "end_time_ms": 68880.0,
+        "duration_ms": 1740
+      },
+      "derived": {
+        "start_time_ms": 67100.0,
+        "end_time_ms": 68840.0,
+        "duration_ms": 1740
+      },
+      "differences": [
+        "start 67140.0->67100.0",
+        "end 68880.0->68840.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0026",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 69400.0,
+        "end_time_ms": 71120.0,
+        "duration_ms": 1720
+      },
+      "derived": {
+        "start_time_ms": 69360.0,
+        "end_time_ms": 71080.0,
+        "duration_ms": 1720
+      },
+      "differences": [
+        "start 69400.0->69360.0",
+        "end 71120.0->71080.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0027",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 71600.0,
+        "end_time_ms": 73220.0,
+        "duration_ms": 1620
+      },
+      "derived": {
+        "start_time_ms": 71560.0,
+        "end_time_ms": 73180.0,
+        "duration_ms": 1620
+      },
+      "differences": [
+        "start 71600.0->71560.0",
+        "end 73220.0->73180.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0028",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 73680.0,
+        "end_time_ms": 75360.0,
+        "duration_ms": 1680
+      },
+      "derived": {
+        "start_time_ms": 73640.0,
+        "end_time_ms": 75320.0,
+        "duration_ms": 1680
+      },
+      "differences": [
+        "start 73680.0->73640.0",
+        "end 75360.0->75320.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0029",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 75820.0,
+        "end_time_ms": 77460.0,
+        "duration_ms": 1640
+      },
+      "derived": {
+        "start_time_ms": 75780.0,
+        "end_time_ms": 77420.0,
+        "duration_ms": 1640
+      },
+      "differences": [
+        "start 75820.0->75780.0",
+        "end 77460.0->77420.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0030",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 77900.0,
+        "end_time_ms": 78680.0,
+        "duration_ms": 780
+      },
+      "derived": {
+        "start_time_ms": 77860.0,
+        "end_time_ms": 78640.0,
+        "duration_ms": 780
+      },
+      "differences": [
+        "start 77900.0->77860.0",
+        "end 78680.0->78640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0031",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 79140.0,
+        "end_time_ms": 79920.0,
+        "duration_ms": 780
+      },
+      "derived": {
+        "start_time_ms": 79100.0,
+        "end_time_ms": 79880.0,
+        "duration_ms": 780
+      },
+      "differences": [
+        "start 79140.0->79100.0",
+        "end 79920.0->79880.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0032",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 80460.0,
+        "end_time_ms": 81500.0,
+        "duration_ms": 1040
+      },
+      "derived": {
+        "start_time_ms": 80420.0,
+        "end_time_ms": 81460.0,
+        "duration_ms": 1040
+      },
+      "differences": [
+        "start 80460.0->80420.0",
+        "end 81500.0->81460.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0033",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 81880.0,
+        "end_time_ms": 82960.0,
+        "duration_ms": 1080
+      },
+      "derived": {
+        "start_time_ms": 81840.0,
+        "end_time_ms": 82920.0,
+        "duration_ms": 1080
+      },
+      "differences": [
+        "start 81880.0->81840.0",
+        "end 82960.0->82920.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0034",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 83420.0,
+        "end_time_ms": 84420.0,
+        "duration_ms": 1000
+      },
+      "derived": {
+        "start_time_ms": 83380.0,
+        "end_time_ms": 84380.0,
+        "duration_ms": 1000
+      },
+      "differences": [
+        "start 83420.0->83380.0",
+        "end 84420.0->84380.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0035",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 84840.0,
+        "end_time_ms": 88720.0,
+        "duration_ms": 3880
+      },
+      "derived": {
+        "start_time_ms": 84800.0,
+        "end_time_ms": 88680.0,
+        "duration_ms": 3880
+      },
+      "differences": [
+        "start 84840.0->84800.0",
+        "end 88720.0->88680.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0036",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 89180.0,
+        "end_time_ms": 91600.0,
+        "duration_ms": 2420
+      },
+      "derived": {
+        "start_time_ms": 89140.0,
+        "end_time_ms": 91560.0,
+        "duration_ms": 2420
+      },
+      "differences": [
+        "start 89180.0->89140.0",
+        "end 91600.0->91560.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0037",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 92000.0,
+        "end_time_ms": 94840.0,
+        "duration_ms": 2840
+      },
+      "derived": {
+        "start_time_ms": 91960.0,
+        "end_time_ms": 94800.0,
+        "duration_ms": 2840
+      },
+      "differences": [
+        "start 92000.0->91960.0",
+        "end 94840.0->94800.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0038",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 95480.0,
+        "end_time_ms": 96940.0,
+        "duration_ms": 1460
+      },
+      "derived": {
+        "start_time_ms": 95440.0,
+        "end_time_ms": 96900.0,
+        "duration_ms": 1460
+      },
+      "differences": [
+        "start 95480.0->95440.0",
+        "end 96940.0->96900.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0039",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 97360.0,
+        "end_time_ms": 98940.0,
+        "duration_ms": 1580
+      },
+      "derived": {
+        "start_time_ms": 97320.0,
+        "end_time_ms": 98900.0,
+        "duration_ms": 1580
+      },
+      "differences": [
+        "start 97360.0->97320.0",
+        "end 98940.0->98900.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0040",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 99220.0,
+        "end_time_ms": 100560.0,
+        "duration_ms": 1340
+      },
+      "derived": {
+        "start_time_ms": 99180.0,
+        "end_time_ms": 100520.0,
+        "duration_ms": 1340
+      },
+      "differences": [
+        "start 99220.0->99180.0",
+        "end 100560.0->100520.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0041",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 101060.0,
+        "end_time_ms": 103520.0,
+        "duration_ms": 2460
+      },
+      "derived": {
+        "start_time_ms": 101020.0,
+        "end_time_ms": 103480.0,
+        "duration_ms": 2460
+      },
+      "differences": [
+        "start 101060.0->101020.0",
+        "end 103520.0->103480.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0042",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 103880.0,
+        "end_time_ms": 105300.0,
+        "duration_ms": 1420
+      },
+      "derived": {
+        "start_time_ms": 103840.0,
+        "end_time_ms": 105260.0,
+        "duration_ms": 1420
+      },
+      "differences": [
+        "start 103880.0->103840.0",
+        "end 105300.0->105260.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0043",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 105880.0,
+        "end_time_ms": 107180.0,
+        "duration_ms": 1300
+      },
+      "derived": {
+        "start_time_ms": 105840.0,
+        "end_time_ms": 107140.0,
+        "duration_ms": 1300
+      },
+      "differences": [
+        "start 105880.0->105840.0",
+        "end 107180.0->107140.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0044",
+      "stream_id": "S1",
+      "pre04_metadata": {
+        "start_time_ms": 107480.0,
+        "end_time_ms": 107660.0,
+        "duration_ms": 180
+      },
+      "derived": {
+        "start_time_ms": 107440.0,
+        "end_time_ms": 107620.0,
+        "duration_ms": 180
+      },
+      "differences": [
+        "start 107480.0->107440.0",
+        "end 107660.0->107620.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0045",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 20.0,
+        "end_time_ms": 1660.0,
+        "duration_ms": 1640
+      },
+      "derived": {
+        "start_time_ms": 0.0,
+        "end_time_ms": 1640.0,
+        "duration_ms": 1640
+      },
+      "differences": [
+        "start 20.0->0.0",
+        "end 1660.0->1640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0046",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 2100.0,
+        "end_time_ms": 3820.0,
+        "duration_ms": 1720
+      },
+      "derived": {
+        "start_time_ms": 2080.0,
+        "end_time_ms": 3800.0,
+        "duration_ms": 1720
+      },
+      "differences": [
+        "start 2100.0->2080.0",
+        "end 3820.0->3800.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0047",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 4140.0,
+        "end_time_ms": 5840.0,
+        "duration_ms": 1700
+      },
+      "derived": {
+        "start_time_ms": 4120.0,
+        "end_time_ms": 5820.0,
+        "duration_ms": 1700
+      },
+      "differences": [
+        "start 4140.0->4120.0",
+        "end 5840.0->5820.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0048",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 6340.0,
+        "end_time_ms": 7300.0,
+        "duration_ms": 960
+      },
+      "derived": {
+        "start_time_ms": 6320.0,
+        "end_time_ms": 7280.0,
+        "duration_ms": 960
+      },
+      "differences": [
+        "start 6340.0->6320.0",
+        "end 7300.0->7280.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0049",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 7580.0,
+        "end_time_ms": 8060.000000000001,
+        "duration_ms": 480
+      },
+      "derived": {
+        "start_time_ms": 7560.0,
+        "end_time_ms": 8040.0,
+        "duration_ms": 480
+      },
+      "differences": [
+        "start 7580.0->7560.0",
+        "end 8060.000000000001->8040.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0050",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 8480.0,
+        "end_time_ms": 10720.0,
+        "duration_ms": 2240
+      },
+      "derived": {
+        "start_time_ms": 8460.0,
+        "end_time_ms": 10700.0,
+        "duration_ms": 2240
+      },
+      "differences": [
+        "start 8480.0->8460.0",
+        "end 10720.0->10700.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0051",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 11220.0,
+        "end_time_ms": 14420.0,
+        "duration_ms": 3200
+      },
+      "derived": {
+        "start_time_ms": 11200.0,
+        "end_time_ms": 14400.0,
+        "duration_ms": 3200
+      },
+      "differences": [
+        "start 11220.0->11200.0",
+        "end 14420.0->14400.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0052",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 14800.0,
+        "end_time_ms": 15620.0,
+        "duration_ms": 820
+      },
+      "derived": {
+        "start_time_ms": 14780.0,
+        "end_time_ms": 15600.0,
+        "duration_ms": 820
+      },
+      "differences": [
+        "start 14800.0->14780.0",
+        "end 15620.0->15600.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0053",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 16180.0,
+        "end_time_ms": 16660.0,
+        "duration_ms": 480
+      },
+      "derived": {
+        "start_time_ms": 16160.0,
+        "end_time_ms": 16640.0,
+        "duration_ms": 480
+      },
+      "differences": [
+        "start 16180.0->16160.0",
+        "end 16660.0->16640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0054",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 17340.0,
+        "end_time_ms": 20140.0,
+        "duration_ms": 2800
+      },
+      "derived": {
+        "start_time_ms": 17320.0,
+        "end_time_ms": 20120.0,
+        "duration_ms": 2800
+      },
+      "differences": [
+        "start 17340.0->17320.0",
+        "end 20140.0->20120.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0055",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 20660.0,
+        "end_time_ms": 23280.0,
+        "duration_ms": 2620
+      },
+      "derived": {
+        "start_time_ms": 20640.0,
+        "end_time_ms": 23260.0,
+        "duration_ms": 2620
+      },
+      "differences": [
+        "start 20660.0->20640.0",
+        "end 23280.0->23260.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0056",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 23760.0,
+        "end_time_ms": 29140.0,
+        "duration_ms": 5380
+      },
+      "derived": {
+        "start_time_ms": 23740.0,
+        "end_time_ms": 29120.0,
+        "duration_ms": 5380
+      },
+      "differences": [
+        "start 23760.0->23740.0",
+        "end 29140.0->29120.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0057",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 29440.0,
+        "end_time_ms": 32580.0,
+        "duration_ms": 3140
+      },
+      "derived": {
+        "start_time_ms": 29420.0,
+        "end_time_ms": 32560.0,
+        "duration_ms": 3140
+      },
+      "differences": [
+        "start 29440.0->29420.0",
+        "end 32580.0->32560.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0058",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 33080.0,
+        "end_time_ms": 33840.0,
+        "duration_ms": 760
+      },
+      "derived": {
+        "start_time_ms": 33060.0,
+        "end_time_ms": 33820.0,
+        "duration_ms": 760
+      },
+      "differences": [
+        "start 33080.0->33060.0",
+        "end 33840.0->33820.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0059",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 34280.0,
+        "end_time_ms": 35660.0,
+        "duration_ms": 1380
+      },
+      "derived": {
+        "start_time_ms": 34260.0,
+        "end_time_ms": 35640.0,
+        "duration_ms": 1380
+      },
+      "differences": [
+        "start 34280.0->34260.0",
+        "end 35660.0->35640.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0060",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 36180.0,
+        "end_time_ms": 37000.0,
+        "duration_ms": 820
+      },
+      "derived": {
+        "start_time_ms": 36160.0,
+        "end_time_ms": 36980.0,
+        "duration_ms": 820
+      },
+      "differences": [
+        "start 36180.0->36160.0",
+        "end 37000.0->36980.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0061",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 37340.0,
+        "end_time_ms": 42500.0,
+        "duration_ms": 5160
+      },
+      "derived": {
+        "start_time_ms": 37320.0,
+        "end_time_ms": 42480.0,
+        "duration_ms": 5160
+      },
+      "differences": [
+        "start 37340.0->37320.0",
+        "end 42500.0->42480.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0062",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 42920.0,
+        "end_time_ms": 45100.0,
+        "duration_ms": 2180
+      },
+      "derived": {
+        "start_time_ms": 42900.0,
+        "end_time_ms": 45080.0,
+        "duration_ms": 2180
+      },
+      "differences": [
+        "start 42920.0->42900.0",
+        "end 45100.0->45080.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0063",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 45380.0,
+        "end_time_ms": 51880.0,
+        "duration_ms": 6500
+      },
+      "derived": {
+        "start_time_ms": 45360.0,
+        "end_time_ms": 51860.0,
+        "duration_ms": 6500
+      },
+      "differences": [
+        "start 45380.0->45360.0",
+        "end 51880.0->51860.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0064",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 52400.0,
+        "end_time_ms": 53860.0,
+        "duration_ms": 1460
+      },
+      "derived": {
+        "start_time_ms": 52380.0,
+        "end_time_ms": 53840.0,
+        "duration_ms": 1460
+      },
+      "differences": [
+        "start 52400.0->52380.0",
+        "end 53860.0->53840.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0065",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 54180.0,
+        "end_time_ms": 55900.0,
+        "duration_ms": 1720
+      },
+      "derived": {
+        "start_time_ms": 54160.0,
+        "end_time_ms": 55880.0,
+        "duration_ms": 1720
+      },
+      "differences": [
+        "start 54180.0->54160.0",
+        "end 55900.0->55880.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0066",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 56360.0,
+        "end_time_ms": 56840.0,
+        "duration_ms": 480
+      },
+      "derived": {
+        "start_time_ms": 56340.0,
+        "end_time_ms": 56820.0,
+        "duration_ms": 480
+      },
+      "differences": [
+        "start 56360.0->56340.0",
+        "end 56840.0->56820.0"
+      ]
+    },
+    {
+      "candidate_id": "msg_0067",
+      "stream_id": "S2",
+      "pre04_metadata": {
+        "start_time_ms": 57120.0,
+        "end_time_ms": 59460.0,
+        "duration_ms": 2340
+      },
+      "derived": {
+        "start_time_ms": 57100.0,
+        "end_time_ms": 59440.0,
+        "duration_ms": 2340
+      },
+      "differences": [
+        "start 57120.0->57100.0",
+        "end 59460.0->59440.0"
+      ]
+    }
+  ]
+}
