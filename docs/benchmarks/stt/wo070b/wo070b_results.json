@@ -1,0 +1,62 @@
+{
+  "aggregate": [
+    {
+      "CER": 0.7749244712990937,
+      "WER": 1.062937062937063,
+      "deletions": 9,
+      "empty_hypothesis_count": 2,
+      "engine": "faster_whisper",
+      "evaluated_count": 61,
+      "hypotheses": 67,
+      "insertions": 47,
+      "reference_count": 61,
+      "substitutions": 96
+    },
+    {
+      "CER": 0.4984894259818731,
+      "WER": 0.5944055944055944,
+      "deletions": 34,
+      "empty_hypothesis_count": 9,
+      "engine": "vosk",
+      "evaluated_count": 61,
+      "hypotheses": 67,
+      "insertions": 8,
+      "reference_count": 61,
+      "substitutions": 43
+    }
+  ],
+  "mapping": {
+    "faster_whisper": {
+      "duplicates": [],
+      "hypothesis_ids": 67,
+      "matched": 67,
+      "missing_ids": [],
+      "orphan_hypotheses": [],
+      "reference_ids": 67
+    },
+    "vosk": {
+      "duplicates": [],
+      "hypothesis_ids": 67,
+      "matched": 67,
+      "missing_ids": [],
+      "orphan_hypotheses": [],
+      "reference_ids": 67
+    }
+  },
+  "metrics_id": "wo070b-levenshtein-v1",
+  "normalization_id": "wo070b-normalize-v1",
+  "per_message_count": 122,
+  "reference": {
+    "path": "human_reference_transcripts.csv",
+    "transcript_stats": {
+      "DUPLICATE_MESSAGE_IDS": [],
+      "EMPTY_TRANSCRIPTS": 0,
+      "HUMAN_VERIFIED_TRANSCRIPTS": 61,
+      "MISSING_MESSAGE_IDS": [],
+      "NON_AUDIBLE": 6,
+      "NO_HUMAN_TRANSCRIPT": 0,
+      "TOTAL_RECORDS": 67
+    }
+  },
+  "schema": "wo070b-results-v1"
+}

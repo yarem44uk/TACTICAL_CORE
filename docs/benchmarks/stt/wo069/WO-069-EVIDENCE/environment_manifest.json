@@ -1,0 +1,106 @@
+{
+  "schema": "wo069-environment-manifest-v1",
+  "python_version": "3.13.5",
+  "os": "Linux-6.12.48+deb13-cloud-amd64-x86_64-with-glibc2.41",
+  "kernel": "6.12.48+deb13-cloud-amd64",
+  "cpu": "INTEL(R) XEON(R) PLATINUM 8568Y+",
+  "cpu_count": 8,
+  "ram": 16774946816,
+  "cgroup_memory_max": "4294967296",
+  "gpu": "NOT_AVAILABLE",
+  "gpu_memory": "NOT_AVAILABLE",
+  "gpu_evidence": "nvidia-smi not found",
+  "engine": [
+    "faster_whisper",
+    "vosk"
+  ],
+  "model": [
+    "/opt/data/wo067_rebuild/OFFLINE-BUNDLE/models/faster_whisper",
+    "/opt/data/wo067_rebuild/OFFLINE-BUNDLE/models/vosk_uk/vosk-model-uk-v3"
+  ],
+  "model_revision": [
+    "bundled (WO-067 OFFLINE-BUNDLE)",
+    "vosk-model-uk-v3"
+  ],
+  "package_versions": {
+    "faster_whisper": {
+      "faster_whisper": "1.2.1",
+      "ctranslate2": "4.8.2",
+      "vosk": "0.3.45",
+      "cffi": "2.1.1",
+      "numpy": "2.5.3",
+      "onnxruntime": "1.30.0",
+      "av": "18.1.0",
+      "tokenizers": "0.23.2"
+    },
+    "vosk": {
+      "faster_whisper": "1.2.1",
+      "ctranslate2": "4.8.2",
+      "vosk": "0.3.45",
+      "cffi": "2.1.1",
+      "numpy": "2.5.3",
+      "onnxruntime": "1.30.0",
+      "av": "18.1.0",
+      "tokenizers": "0.23.2"
+    }
+  },
+  "engines": [
+    {
+      "engine": "faster_whisper",
+      "display_name": "Faster-Whisper (CTranslate2)",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": null,
+      "python_path": "/opt/data/wo067_runtime_gate_v1/venv/bin/python",
+      "model": {
+        "model_path": "/opt/data/wo067_rebuild/OFFLINE-BUNDLE/models/faster_whisper",
+        "model_present": true,
+        "model_version": "SHA256SUMS",
+        "model_size_bytes": 486216320
+      },
+      "model_revision": "bundled (WO-067 OFFLINE-BUNDLE)",
+      "package_versions": {
+        "faster_whisper": "1.2.1",
+        "ctranslate2": "4.8.2",
+        "vosk": "0.3.45",
+        "cffi": "2.1.1",
+        "numpy": "2.5.3",
+        "onnxruntime": "1.30.0",
+        "av": "18.1.0",
+        "tokenizers": "0.23.2"
+      }
+    },
+    {
+      "engine": "vosk",
+      "display_name": "Vosk (Kaldi) — vosk-model-uk-v3",
+      "device": "cpu",
+      "compute_type": "",
+      "language": "uk",
+      "python_path": "/opt/data/wo067_runtime_gate_v1/venv/bin/python",
+      "model": {
+        "model_path": "/opt/data/wo067_rebuild/OFFLINE-BUNDLE/models/vosk_uk/vosk-model-uk-v3",
+        "model_present": true,
+        "model_version": "UNKNOWN",
+        "model_size_bytes": 1040586413
+      },
+      "model_revision": "vosk-model-uk-v3",
+      "package_versions": {
+        "faster_whisper": "1.2.1",
+        "ctranslate2": "4.8.2",
+        "vosk": "0.3.45",
+        "cffi": "2.1.1",
+        "numpy": "2.5.3",
+        "onnxruntime": "1.30.0",
+        "av": "18.1.0",
+        "tokenizers": "0.23.2"
+      }
+    }
+  ],
+  "interpreter_python_paths": {
+    "faster_whisper": "/opt/data/wo067_runtime_gate_v1/venv/bin/python",
+    "vosk": "/opt/data/wo067_runtime_gate_v1/venv/bin/python"
+  },
+  "dataset_hash": "e0f2b39eea6bb4c87f5fd4adcf23bd35116fd37de86fb062d7569a7a054e52d9",
+  "benchmark_timestamp": "2026-09-19T08:44:38.895845+00:00",
+  "repo_head": "b5712b08d440e683e2f9af3cdceb353175d9eb99"
+}

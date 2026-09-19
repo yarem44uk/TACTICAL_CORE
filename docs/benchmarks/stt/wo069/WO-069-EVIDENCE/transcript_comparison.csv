@@ -1,0 +1,135 @@
+engine,message_id,reference_available,human_audible_voice,human_intelligible,human_voice_type,reference_transcript,hypothesis_raw,hypothesis_normalized
+faster_whisper,msg_0001,false,NO,NO,NONE,UNAVAILABLE,Thank you for watching!,thank you for watching
+faster_whisper,msg_0002,false,YES,YES,FEMALE,UNAVAILABLE,канал «Один».,канал один
+faster_whisper,msg_0003,false,YES,YES,FEMALE,UNAVAILABLE,канал 2 канал 3,канал 2 канал 3
+faster_whisper,msg_0004,false,YES,YES,FEMALE,UNAVAILABLE,канал 2 канал 1,канал 2 канал 1
+faster_whisper,msg_0005,false,YES,YES,FEMALE,UNAVAILABLE,Канал. Канал пьет.,канал канал пьет
+faster_whisper,msg_0006,false,YES,YES,MALE,UNAVAILABLE,"Бит, аитю, навелов, як мане, чуешу, хтпр, як мане.",бит аитю навелов як мане чуешу хтпр як мане
+faster_whisper,msg_0007,false,YES,YES,MALE,UNAVAILABLE,Слышь его.,слышь его
+faster_whisper,msg_0008,false,YES,YES,MALE,UNAVAILABLE,Баще Сорок,баще сорок
+faster_whisper,msg_0009,false,YES,YES,MALE,UNAVAILABLE,И…,и
+faster_whisper,msg_0010,false,YES,YES,MALE,UNAVAILABLE,"Ouah, je suis...",ouah je suis
+faster_whisper,msg_0011,false,YES,YES,MALE,UNAVAILABLE,SORRY,sorry
+faster_whisper,msg_0012,false,YES,YES,MALE,UNAVAILABLE,Плюс-плюс принес на звезду.,плюс-плюс принес на звезду
+faster_whisper,msg_0013,false,YES,YES,MALE,UNAVAILABLE,Чую разбираю чудово.,чую разбираю чудово
+faster_whisper,msg_0014,false,YES,YES,MALE,UNAVAILABLE,That's just cool.,that's just cool
+faster_whisper,msg_0015,false,YES,YES,MALE,UNAVAILABLE,Приятного аппетита!,приятного аппетита
+faster_whisper,msg_0016,false,YES,YES,MALE,UNAVAILABLE,Vaše memo li to je?,vaše memo li to je
+faster_whisper,msg_0017,false,YES,YES,MALE,UNAVAILABLE,Я к тебе поустал.,я к тебе поустал
+faster_whisper,msg_0018,false,YES,YES,MALE,UNAVAILABLE,Удняка!,удняка
+faster_whisper,msg_0019,false,YES,YES,MALE,UNAVAILABLE,Ха-ха! Люсбилл!,ха-ха люсбилл
+faster_whisper,msg_0020,false,YES,YES,FEMALE,UNAVAILABLE,Canal Sheets,canal sheets
+faster_whisper,msg_0021,false,YES,YES,FEMALE,UNAVAILABLE,Канал 7,канал 7
+faster_whisper,msg_0022,false,YES,YES,FEMALE,UNAVAILABLE,канал Visem.,канал visem
+faster_whisper,msg_0023,false,NO,NO,NONE,UNAVAILABLE,You,you
+faster_whisper,msg_0024,false,YES,YES,FEMALE,UNAVAILABLE,Танал 9.,танал 9
+faster_whisper,msg_0025,false,YES,YES,FEMALE,UNAVAILABLE,Канал 9.,канал 9
+faster_whisper,msg_0026,false,YES,YES,FEMALE,UNAVAILABLE,канал 8,канал 8
+faster_whisper,msg_0027,false,YES,YES,FEMALE,UNAVAILABLE,Танал 7.,танал 7
+faster_whisper,msg_0028,false,YES,YES,FEMALE,UNAVAILABLE,canal SHIST,canal shist
+faster_whisper,msg_0029,false,YES,YES,FEMALE,UNAVAILABLE,Редактор субтитров И.Савельева Корректор А.Егорова,редактор субтитров и савельева корректор а егорова
+faster_whisper,msg_0030,false,YES,YES,MALE,UNAVAILABLE,Thank you.,thank you
+faster_whisper,msg_0031,false,YES,YES,MALE,UNAVAILABLE,,
+faster_whisper,msg_0032,false,YES,YES,MALE,UNAVAILABLE,Merci.,merci
+faster_whisper,msg_0033,false,YES,YES,MALE,UNAVAILABLE,Aquaman,aquaman
+faster_whisper,msg_0034,false,YES,YES,MALE,UNAVAILABLE,Thank you very much.,thank you very much
+faster_whisper,msg_0035,false,YES,YES,MALE,UNAVAILABLE,"Бимон, покимон, бамбалейло.",бимон покимон бамбалейло
+faster_whisper,msg_0036,false,YES,YES,MALE,UNAVAILABLE,Бойчёк! Бойчёк!,бойчёк бойчёк
+faster_whisper,msg_0037,false,YES,YES,MALE,UNAVAILABLE,На прокачку. Ремпель.,на прокачку ремпель
+faster_whisper,msg_0038,false,YES,YES,MALE,UNAVAILABLE,Макпорта.,макпорта
+faster_whisper,msg_0039,false,YES,YES,MALE,UNAVAILABLE,You better believe it.,you better believe it
+faster_whisper,msg_0040,false,YES,YES,MALE,UNAVAILABLE,Илюра Аженов.,илюра аженов
+faster_whisper,msg_0041,false,YES,YES,MALE,UNAVAILABLE,I don't know if I'll f**k while I sit.,i don't know if i'll f k while i sit
+faster_whisper,msg_0042,false,YES,YES,MALE,UNAVAILABLE,All I need is him.,all i need is him
+faster_whisper,msg_0043,false,YES,YES,MALE,UNAVAILABLE,Tienes de oscuro!,tienes de oscuro
+faster_whisper,msg_0044,false,NO,NO,NONE,UNAVAILABLE,,
+faster_whisper,msg_0045,false,YES,YES,FEMALE,UNAVAILABLE,канал бьет,канал бьет
+faster_whisper,msg_0046,false,YES,YES,FEMALE,UNAVAILABLE,canal SHIST,canal shist
+faster_whisper,msg_0047,false,YES,YES,FEMALE,UNAVAILABLE,канал 7,канал 7
+faster_whisper,msg_0048,false,YES,YES,FEMALE,UNAVAILABLE,канал Visem.,канал visem
+faster_whisper,msg_0049,false,NO,NO,NONE,UNAVAILABLE,You,you
+faster_whisper,msg_0050,false,YES,YES,FEMALE,UNAVAILABLE,Канал пьет.,канал пьет
+faster_whisper,msg_0051,false,YES,YES,MALE,UNAVAILABLE,"Well, then, well, well, well, then, well, well.",well then well well well then well well
+faster_whisper,msg_0052,false,YES,YES,MALE,UNAVAILABLE,Bon voyage.,bon voyage
+faster_whisper,msg_0053,false,NO,NO,NONE,UNAVAILABLE,Thank you.,thank you
+faster_whisper,msg_0054,false,YES,YES,MALE,UNAVAILABLE,Wah-wah-wah,wah-wah-wah
+faster_whisper,msg_0055,false,YES,YES,MALE,UNAVAILABLE,Рифтназовку.,рифтназовку
+faster_whisper,msg_0056,false,YES,YES,MALE,UNAVAILABLE,"Чую, розбираю тебе навіть мій имно.",чую розбираю тебе навіть мій имно
+faster_whisper,msg_0057,false,YES,YES,MALE,UNAVAILABLE,Один. Два.,один два
+faster_whisper,msg_0058,false,YES,YES,MALE,UNAVAILABLE,,
+faster_whisper,msg_0059,false,YES,YES,MALE,UNAVAILABLE,"Чё, пи-и-и-и-и-и?",чё пи-и-и-и-и-и
+faster_whisper,msg_0060,false,YES,YES,MALE,UNAVAILABLE,Клиняй! Клиняй!,клиняй клиняй
+faster_whisper,msg_0061,false,YES,YES,MALE,UNAVAILABLE,Ипис дай дворотний раховому.,ипис дай дворотний раховому
+faster_whisper,msg_0062,false,YES,YES,MALE,UNAVAILABLE,"Плёзы, плёзы.",плёзы плёзы
+faster_whisper,msg_0063,false,YES,YES,MALE,UNAVAILABLE,"Пари на доску, чую, разбираю на видмину.",пари на доску чую разбираю на видмину
+faster_whisper,msg_0064,false,YES,YES,MALE,UNAVAILABLE,Я клеенел.,я клеенел
+faster_whisper,msg_0065,false,YES,YES,FEMALE,UNAVAILABLE,channel she's,channel she's
+faster_whisper,msg_0066,false,NO,NO,NONE,UNAVAILABLE,You,you
+faster_whisper,msg_0067,false,YES,YES,FEMALE,UNAVAILABLE,Канал 2,канал 2
+vosk,msg_0001,false,NO,NO,NONE,UNAVAILABLE,,
+vosk,msg_0002,false,YES,YES,FEMALE,UNAVAILABLE,каналу один,каналу один
+vosk,msg_0003,false,YES,YES,FEMALE,UNAVAILABLE,канал два канал три,канал два канал три
+vosk,msg_0004,false,YES,YES,FEMALE,UNAVAILABLE,канал два го каналу один,канал два го каналу один
+vosk,msg_0005,false,YES,YES,FEMALE,UNAVAILABLE,канал канал п'ять,канал канал п'ять
+vosk,msg_0006,false,YES,YES,MALE,UNAVAILABLE,але навіть як мене чуєш а тепер як мене,але навіть як мене чуєш а тепер як мене
+vosk,msg_0007,false,YES,YES,MALE,UNAVAILABLE,чуєш,чуєш
+vosk,msg_0008,false,YES,YES,MALE,UNAVAILABLE,у багажі сорок,у багажі сорок
+vosk,msg_0009,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0010,false,YES,YES,MALE,UNAVAILABLE,угорці,угорці
+vosk,msg_0011,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0012,false,YES,YES,MALE,UNAVAILABLE,львові кріогенні прийняв канали наукового,львові кріогенні прийняв канали наукового
+vosk,msg_0013,false,YES,YES,MALE,UNAVAILABLE,чую що,чую що
+vosk,msg_0014,false,YES,YES,MALE,UNAVAILABLE,нове,нове
+vosk,msg_0015,false,YES,YES,MALE,UNAVAILABLE,органу,органу
+vosk,msg_0016,false,YES,YES,MALE,UNAVAILABLE,ваше минуле,ваше минуле
+vosk,msg_0017,false,YES,YES,MALE,UNAVAILABLE,дякую,дякую
+vosk,msg_0018,false,YES,YES,MALE,UNAVAILABLE,на одне око,на одне око
+vosk,msg_0019,false,YES,YES,MALE,UNAVAILABLE,люди,люди
+vosk,msg_0020,false,YES,YES,FEMALE,UNAVAILABLE,канал шість,канал шість
+vosk,msg_0021,false,YES,YES,FEMALE,UNAVAILABLE,канал сім го,канал сім го
+vosk,msg_0022,false,YES,YES,FEMALE,UNAVAILABLE,канал вісім,канал вісім
+vosk,msg_0023,false,NO,NO,NONE,UNAVAILABLE,,
+vosk,msg_0024,false,YES,YES,FEMALE,UNAVAILABLE,канал дев'ять,канал дев'ять
+vosk,msg_0025,false,YES,YES,FEMALE,UNAVAILABLE,канал дев'ять,канал дев'ять
+vosk,msg_0026,false,YES,YES,FEMALE,UNAVAILABLE,канал вісім,канал вісім
+vosk,msg_0027,false,YES,YES,FEMALE,UNAVAILABLE,канал сім го,канал сім го
+vosk,msg_0028,false,YES,YES,FEMALE,UNAVAILABLE,канал шість,канал шість
+vosk,msg_0029,false,YES,YES,FEMALE,UNAVAILABLE,канал п'ять,канал п'ять
+vosk,msg_0030,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0031,false,YES,YES,MALE,UNAVAILABLE,меблі,меблі
+vosk,msg_0032,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0033,false,YES,YES,MALE,UNAVAILABLE,а команда,а команда
+vosk,msg_0034,false,YES,YES,MALE,UNAVAILABLE,ох,ох
+vosk,msg_0035,false,YES,YES,MALE,UNAVAILABLE,деймон покемон бомба,деймон покемон бомба
+vosk,msg_0036,false,YES,YES,MALE,UNAVAILABLE,чол,чол
+vosk,msg_0037,false,YES,YES,MALE,UNAVAILABLE,на прокачку три,на прокачку три
+vosk,msg_0038,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0039,false,YES,YES,MALE,UNAVAILABLE,його,його
+vosk,msg_0040,false,YES,YES,MALE,UNAVAILABLE,району,району
+vosk,msg_0041,false,YES,YES,MALE,UNAVAILABLE,блоку коваль,блоку коваль
+vosk,msg_0042,false,YES,YES,MALE,UNAVAILABLE,молодняк,молодняк
+vosk,msg_0043,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0044,false,NO,NO,NONE,UNAVAILABLE,,
+vosk,msg_0045,false,YES,YES,FEMALE,UNAVAILABLE,канал п'ять,канал п'ять
+vosk,msg_0046,false,YES,YES,FEMALE,UNAVAILABLE,канал шість,канал шість
+vosk,msg_0047,false,YES,YES,FEMALE,UNAVAILABLE,канал сім го,канал сім го
+vosk,msg_0048,false,YES,YES,FEMALE,UNAVAILABLE,канал вісім,канал вісім
+vosk,msg_0049,false,NO,NO,NONE,UNAVAILABLE,,
+vosk,msg_0050,false,YES,YES,FEMALE,UNAVAILABLE,канал п'ять,канал п'ять
+vosk,msg_0051,false,YES,YES,MALE,UNAVAILABLE,один один,один один
+vosk,msg_0052,false,YES,YES,MALE,UNAVAILABLE,брови,брови
+vosk,msg_0053,false,NO,NO,NONE,UNAVAILABLE,днр,днр
+vosk,msg_0054,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0055,false,YES,YES,MALE,UNAVAILABLE,на,на
+vosk,msg_0056,false,YES,YES,MALE,UNAVAILABLE,а ю на відмінно,а ю на відмінно
+vosk,msg_0057,false,YES,YES,MALE,UNAVAILABLE,один,один
+vosk,msg_0058,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0059,false,YES,YES,MALE,UNAVAILABLE,що,що
+vosk,msg_0060,false,YES,YES,MALE,UNAVAILABLE,,
+vosk,msg_0061,false,YES,YES,MALE,UNAVAILABLE,брівки до хорому,брівки до хорому
+vosk,msg_0062,false,YES,YES,MALE,UNAVAILABLE,книгу року,книгу року
+vosk,msg_0063,false,YES,YES,MALE,UNAVAILABLE,чую вимирає на відмінно,чую вимирає на відмінно
+vosk,msg_0064,false,YES,YES,MALE,UNAVAILABLE,як прийняв,як прийняв
+vosk,msg_0065,false,YES,YES,FEMALE,UNAVAILABLE,канал шість,канал шість
+vosk,msg_0066,false,NO,NO,NONE,UNAVAILABLE,,
+vosk,msg_0067,false,YES,YES,FEMALE,UNAVAILABLE,канал два га,канал два га

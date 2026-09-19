@@ -1,0 +1,30 @@
+{
+  "policy_id": "wo069-normalization-v1",
+  "function": "wo069_metrics.normalize",
+  "applies_to": [
+    "human_reference_transcript",
+    "engine_hypothesis"
+  ],
+  "identical_for_all_engines": true,
+  "steps": [
+    "unicode NFKC normalization",
+    "lowercase (str.lower)",
+    "apostrophes unified to ' (U+0027)",
+    "dashes unified to - (U+002D)",
+    "all characters outside [word char, whitespace, apostrophe, Cyrillic block, hyphen] replaced by a space",
+    "whitespace collapsed to single spaces and stripped"
+  ],
+  "tokenization": {
+    "wer": "whitespace split of the normalized text",
+    "cer": "character sequence of the normalized text with spaces removed"
+  },
+  "distance": "Levenshtein (unit-cost substitution/insertion/deletion)",
+  "forbidden_operations_not_performed": [
+    "correcting Ukrainian or Russian words",
+    "correcting names or callsigns",
+    "inferring intended words",
+    "manually improving engine output",
+    "rewriting the human reference in the source artifact"
+  ],
+  "note": "the human-review artifact is never rewritten; normalization is computed in memory only"
+}

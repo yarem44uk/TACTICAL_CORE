@@ -1,0 +1,3 @@
+engine,records_total,records_with_reference,records_with_hypothesis,evaluated_records,excluded_records,wer,cer,wer_status,cer_status
+faster_whisper,67,0,64,0,67,NOT_MEASURED,NOT_MEASURED,NOT_MEASURABLE,NOT_MEASURABLE
+vosk,67,0,53,0,67,NOT_MEASURED,NOT_MEASURED,NOT_MEASURABLE,NOT_MEASURABLE
