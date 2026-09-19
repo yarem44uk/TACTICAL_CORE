@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timezone
 
 import wo069_metrics as M
+import wo069_wer_evidence as W
 
 NOT_MEASURED = "NOT_MEASURED"
 UNAVAILABLE_TEXT = "UNAVAILABLE"
@@ -292,6 +293,8 @@ def write_evidence(outdir: str, results: dict, records_by_id: dict) -> dict:
     paths["benchmark_results.json"] = _write_json(
         os.path.join(outdir, "benchmark_results.json"), results
     )
+    # WO-069-CORRECTIVE — explicit WER/CER measurement evidence (fail-closed).
+    paths.update(W.write_wer_evidence(outdir, results, records_by_id))
     paths["WO-069-EVIDENCE-REPORT.md"] = write_report(
         os.path.join(outdir, "WO-069-EVIDENCE-REPORT.md"), results, records_by_id
     )
@@ -400,7 +403,30 @@ def render_report(results: dict, records_by_id: dict) -> str:
             f"audible=YES with output {diagnostic['speech_label_yes_with_output']}; "
             f"audible=NO with empty output {diagnostic['nonspeech_label_no_with_empty_output']}")
         add("")
-    add("## 4. Failures and timeouts")
+    add("## 4. WER/CER measurement (WO-069-CORRECTIVE)")
+    add("")
+    wer_diag = W.build_diagnostic(results, records_by_id)
+    wer_eval = W.evaluate(results, records_by_id)
+    add(f"- WER_STATUS: **{wer_diag['wer_status']}**")
+    add(f"- CER_STATUS: **{wer_diag['cer_status']}**")
+    add(f"- REFERENCE_SOURCE: `{wer_diag['reference_source']}`")
+    add(f"- HYPOTHESIS_SOURCE: `{wer_diag['hypothesis_source']}`")
+    add(f"- NORMALIZATION_POLICY: `{wer_diag['normalization_policy']}`")
+    add(f"- reference transcripts available: {wer_diag['reference_transcripts_available']}"
+        f"/{wer_diag['records_total']}")
+    for entry in wer_eval["summary"]:
+        add(f"- **{entry['engine']}** — evaluated_records: {entry['evaluated_records']}"
+            f"/{entry['records_total']}; WER: {entry['wer']} ({entry['wer_status']}); "
+            f"CER: {entry['cer']} ({entry['cer_status']}); excluded: "
+            f"{entry['excluded_records']} "
+            f"(no reference {entry['excluded_no_reference']}, "
+            f"no hypothesis {entry['excluded_no_hypothesis']})")
+    add("")
+    add("Excluded records: every dataset record is excluded with the explicit reason "
+        "`EXCLUDED_NO_HUMAN_REFERENCE_TRANSCRIPT`, because the human-review artifact "
+        "carries no verbatim transcript for any message. No WER/CER value is estimated.")
+    add("")
+    add("## 5. Failures and timeouts")
     add("")
     any_failure = False
     for engine_result in results["engines"]:
@@ -417,17 +443,20 @@ def render_report(results: dict, records_by_id: dict) -> str:
     if not any_failure:
         add("- none: every executed engine completed without a per-file failure.")
     add("")
-    add("## 5. Production architecture")
+    add("## 6. Production architecture")
     add("")
     add("- benchmark layer is isolated: no EventFactory / EventPipeline / Observation / "
         "journal / Operator Wall involvement, no production STT seam change.")
     add("- production engine selected: **NO** (ADR-014 Part 2 remains a CSA decision).")
     add("")
-    add("## 6. Evidence files")
+    add("## 7. Evidence files")
     add("")
     for name in ("benchmark_results.csv", "transcript_comparison.csv", "callsign_results.csv",
                  "runtime_metrics.csv", "resource_metrics.csv", "environment_manifest.json",
-                 "dataset_manifest.json", "benchmark_results.json"):
+                 "dataset_manifest.json", "benchmark_results.json",
+                 "wer_cer_results.csv", "wer_cer_summary.csv",
+                 "wer_cer_normalization.json", "wer_cer_diagnostic.json",
+                 "hypothesis_availability_matrix.csv"):
         add(f"- `{name}`")
     add("")
     add("---")

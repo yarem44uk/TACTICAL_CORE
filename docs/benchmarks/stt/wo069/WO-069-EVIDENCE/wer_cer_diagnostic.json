@@ -1,0 +1,26 @@
+{
+  "schema": "wo069-wer-cer-diagnostic-v1",
+  "reference_source": "human_review_artifact:transcript",
+  "hypothesis_source": "engine_run_ledger:record.text (raw, unmodified)",
+  "normalization_policy": "wo069-normalization-v1",
+  "records_total": 67,
+  "reference_transcripts_available": 0,
+  "wer_status": "NOT_MEASURABLE",
+  "cer_status": "NOT_MEASURABLE",
+  "engines": {
+    "faster_whisper": {
+      "hypotheses_available": 64,
+      "records_total": 67
+    },
+    "vosk": {
+      "hypotheses_available": 53,
+      "records_total": 67
+    }
+  },
+  "missing_evidence": [
+    "no human reference transcript exists for any of the 67 records; the human listening review records categorical labels only (audible_voice / intelligible / radio_style / speaker / dialogue_candidate / voice_type / confidence) and carries no verbatim transcript column",
+    "the WO-068 ground-truth sidecar is UNAVAILABLE with an empty entries[] list and WO-068 forbids inventing ground truth",
+    "the reference transcript for each record must be entered by a human listening to the audio and written into the human-review artifact"
+  ],
+  "required_next_step": "a human listening review that writes a verbatim transcript per message into the human-review artifact (or a human-sourced ground-truth sidecar) is required before WER/CER can be measured; until then WER/CER remain NOT_MEASURED and are not estimated"
+}
