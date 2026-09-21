@@ -363,14 +363,31 @@ artifact, not a production defect** (see DEFECTS D-1).
 | T5 | WO-038/039a/039b/039c/041/048/055/056/057/058/063/064 audio + radio vertical-slice suites | exit 0 — **249 passed** (28.79 s) |
 | T6 | WO-024/WO-027 migration durability + WO-014-009..013 + WO-014-022/023/024 + WO-020..023 + event_bus/dispatcher/persistence + plugin wiring/delivery | exit 0 — **243 passed** (12.83 s) |
 
+Total: the six batches above are **1320 literal test executions**; T1 is a strict
+subset of T2 (`tests/test_wo066_end_to_end.py` is present in both), so the
+**de-duplicated targeted total is 1312 tests** (1320 - 8). 1312 is explicitly a
+DE-DUPLICATED total, not a literal execution count; the individual batch counts
+above are unchanged.
+
 ### Full suite (informational, for completeness)
 
 | Command | Result |
 |---|---|
-| `../.venv/bin/python -m pytest tests/ -q --ignore=tests/intelligence/test_identity.py` | **2180 passed, 50 failed, 16 skipped** in 102.97 s |
+| `../.venv/bin/python -m pytest tests/ -q --ignore=tests/intelligence/test_identity.py` | WO-073 execution: **2180 passed, 50 failed, 16 skipped** in 102.97 s; independent forensic rerun: **2181 passed, 49 failed, 16 skipped** in 102.36 s (rc 1) |
 | `../.venv/bin/python -m pytest tests/ -q` | collection error: `tests/intelligence/test_identity.py` cannot import `ExternalIdentity` (pre-existing stale import, module excluded by the project's standard command) |
 
-All 50 failures are confined to the **legacy subsystem** and are pre-existing at
+Neither count may be presented as the uniquely verified actual count. The two
+runs differ by exactly one test, and the difference is attributable to
+order/`PYTHONPATH`-sensitive behaviour around
+`tests/test_wo032_production_entrypoint.py::test_wo034_backend_dir_bootstrap_is_idempotent`
+(it passes with `PYTHONPATH` unset or `..` only, and fails when `backend/` is
+itself placed on `PYTHONPATH` — see DEFECT D-1). The discrepancy is a harness /
+order / `PYTHONPATH` sensitivity, NOT a production-path defect, and it does not
+alter any conclusion of this document; the legacy failures remain outside the
+canonical production path.
+
+All failures in both runs (50 in the WO-073 execution, 49 in the independent
+rerun) are confined to the **legacy subsystem** and are pre-existing at
 the untouched baseline:
 
 * `tests/integration/test_end_to_end_pipeline.py` (6), `test_entity_bridge_e2e_real.py` (14),
@@ -423,12 +440,27 @@ SAFE_SYNTHETIC_E2E_FIXTURE: AVAILABLE
 `backend/tests/test_wo066_end_to_end.py` is an already existing safe
 synthetic/in-memory E2E fixture. It uses a temporary WAV under `tmp_path`, a
 temporary SQLite file, a deterministic fake transcriber implementing the
-production `ITranscriber` seam, and the real production composition. It does
-NOT contact radio hardware, Signal/Telegram/MQTT/ATAK infrastructure, does not
-touch production databases, sends no external messages, modifies no real
-recordings and does not access `?? 500`.
+production `ITranscriber` seam, and the real canonical runtime machinery and
+production composition. It does NOT contact radio hardware,
+Signal/Telegram/MQTT/ATAK infrastructure, does not touch production databases,
+sends no external messages, modifies no real recordings and does not access
+`?? 500`.
 
-Executed: **8 passed** (exit 0). It proves, through the real production runtime
+Scope limitation of this fixture (inherited from WO-066; NOT a WO-073 change and
+NOT a WO-073 defect): the fixture **hand-constructs**
+`MulticastAudioSourceAdapter`, explicitly injects `runtime.radio_event_integrator`,
+and directly drives `aruntime._process_raw(final_raw)`. It therefore verifies the
+canonical production runtime chain
+(`AdapterRuntime -> EventFactory -> EventPipeline -> durable journal -> Observation
+-> Operator Wall`), but it does **NOT** constitute independent proof that the
+production source-adapter factory/integrator injection seam wires
+`radio_event_integrator` through: `register_multicast_audio_adapter()` registers
+the adapter builder, while `radio_event_integrator` is not injected by that
+production factory registration. The hand-built adapter and the direct
+`_process_raw` invocation are limitations of the synthetic fixture. No source
+adapter, registration, pipeline or observation code was modified by WO-073.
+
+Executed: **8 passed** (exit 0). It verifies, through the real canonical runtime
 path, that ONE accepted durable radio recording traverses
 `recording -> STT seam -> enrichment -> final radio event -> canonical RAW ->
 AdapterRuntime._process_raw -> EventFactory -> EventPipeline -> durable journal
@@ -504,7 +536,7 @@ tree; no code change was made. CLASSIFY: **DOCUMENTATION GAP (non-blocking)**.
   engine were exercised — by design and by WO prohibition. The chain is
   therefore VERIFIED at the code + test + composition-runtime level, and the
   remaining gap to live-field verification is explicitly NOT covered here.
-* L-5 — 50 pre-existing legacy-subsystem test failures and 1 pre-existing
+* L-5 — 50 (WO-073 execution) / 49 (independent rerun) pre-existing legacy-subsystem test failures and 1 pre-existing
   collection error remain at baseline; they are off the canonical chain and
   were not repaired.
 
