@@ -38,7 +38,7 @@ import os
 import signal
 import sys
 import threading
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 # --- WO-033 — import-path bootstrap -------------------------------------------
 # The ``app`` package lives under ``backend/``.  When the production entrypoint is
@@ -61,6 +61,9 @@ from app.event_sources.source_registration import (
     ProductionSourceRegistrar,
 )
 from app.plugins.manager.plugin_manager import PluginManager
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.event_sources.adapters.signal_transport import SignalTransport
 
 logger = logging.getLogger(__name__)
 
@@ -311,18 +314,28 @@ def _production_source_provider() -> Optional[ISourceConfigProvider]:
     return build_production_source_provider()
 
 
-def _production_adapter_factory() -> AdapterFactory:
+def _production_adapter_factory(
+    signal_transport: "SignalTransport | None" = None,
+) -> AdapterFactory:
     """Return the production AdapterFactory.
 
     WO-036 (ADR-010 Option B): returns an ``AdapterFactory`` with all five
     known production source-adapter types registered through the existing
     registration helpers (atak, mqtt, signal, radio, telegram).
+
+    WO-075 — injectable Signal transport: ``signal_transport`` is passed
+    through to ``build_production_adapter_factory`` so an embedding deployment
+    can inject the production Signal producer seam (the transport that feeds
+    ``SignalSourceAdapter.ingest``).  It defaults to ``None`` (the Signal
+    adapter is then a passive queue), so the process behaviour is unchanged
+    unless a transport is explicitly injected.  No live Signal connectivity is
+    established here.
     """
     from app.event_sources.config.production_source_config import (
         build_production_adapter_factory,
     )
 
-    return build_production_adapter_factory()
+    return build_production_adapter_factory(signal_transport=signal_transport)
 
 
 if __name__ == "__main__":  # pragma: no cover - process entrypoint

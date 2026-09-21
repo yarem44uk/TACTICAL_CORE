@@ -31,12 +31,15 @@ the catalog; no new secret-management subsystem is introduced.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .adapter_factory import AdapterFactory
 from .errors import DuplicateSourceError, SourceConfigError, SourceNotFoundError
 from .provider import ISourceConfigProvider
 from .source_definition import SourceDefinition
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..adapters.signal_transport import SignalTransport
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +52,9 @@ logger = logging.getLogger(__name__)
 # declare which real sources the production process should register.
 #
 # By default the catalog declares the production multicast radio source
-# (WO-056) so ``main()`` -> ``register_sources()`` genuinely registers and
-# instantiates the ``multicast_audio`` adapter through the canonical
+# (WO-056) and the production Signal messaging source (WO-075) so
+# ``main()`` -> ``register_sources()`` genuinely registers and instantiates the
+# ``multicast_audio`` and ``signal`` adapters through the canonical
 # registration path.  A missing catalog is still a hard error, NOT an empty
 # catalog — that distinction is enforced by the provider (see
 # ``ProductionSourceConfigProvider``).
@@ -97,7 +101,53 @@ def _production_radio_source() -> SourceDefinition:
     )
 
 
-PRODUCTION_SOURCE_CATALOG: list[SourceDefinition] = [_production_radio_source()]
+def _production_signal_source() -> SourceDefinition:
+    """Build the production ``signal`` source definition (WO-075).
+
+    This declares the Signal messaging source in the SAME static production
+    catalog that declares the radio source, so the Signal adapter is built and
+    registered through the REAL production composition path
+    (``PRODUCTION_SOURCE_CATALOG`` -> ``ProductionSourceConfigProvider`` ->
+    ``ProductionSourceRegistrar`` -> ``AdapterFactory`` -> ``AdapterSupervisor``
+    -> ``AdapterRuntime``) instead of being a test-only artifact.
+
+    The ``adapter_type`` must match the adapter type registered by
+    ``register_signal_adapter`` (``SIGNAL_ADAPTER_TYPE``), i.e. ``"signal"``.
+
+    ``enabled=True`` is the explicit production declaration: the production
+    registrar only registers enabled sources, so composition genuinely builds
+    the Signal source.  It does NOT prove live Signal connectivity: the
+    adapter is driven by an INJECTABLE transport
+    (``build_production_adapter_factory(signal_transport=...)``), and with no
+    transport injected the adapter is a passive queue (no producer).
+
+    Secrets: ``credentials_ref`` is a REFERENCE to the embedding deployment's
+    credential store entry only — never a secret value (ADR-010).  The config
+    carries no credentials, no account identifiers, and no PII: just the
+    logical source name and the logical ingestion channel label the adapter
+    reads.
+    """
+    return SourceDefinition(
+        name="signal",
+        adapter_type="signal",
+        enabled=True,
+        config={
+            "source_name": "signal",
+            # Logical ingestion channel label (opaque to the config layer;
+            # read by SignalSourceAdapter).  Not a credential and not an
+            # account identifier.
+            "channel": "signal-canonical",
+        },
+        # Reference-only: the name of the credential-store entry an embedding
+        # deployment provisions for the real Signal transport.
+        credentials_ref="signal/production",
+    )
+
+
+PRODUCTION_SOURCE_CATALOG: list[SourceDefinition] = [
+    _production_radio_source(),
+    _production_signal_source(),
+]
 
 
 class ProductionSourceConfigProvider(ISourceConfigProvider):
@@ -186,7 +236,9 @@ def build_production_source_provider(
     return ProductionSourceConfigProvider(catalog=catalog)
 
 
-def build_production_adapter_factory() -> AdapterFactory:
+def build_production_adapter_factory(
+    signal_transport: "SignalTransport | None" = None,
+) -> AdapterFactory:
     """Construct the production ``AdapterFactory`` with all six adapter types.
 
     Registers exactly the six known production adapter types through the
@@ -197,6 +249,18 @@ def build_production_adapter_factory() -> AdapterFactory:
     adapter (``MulticastAudioSourceAdapter``); it is registered here so the
     production composition can build the production radio path and the radio
     source is not an isolated test-only subsystem.
+
+    WO-075 — injectable Signal transport: when ``signal_transport`` is
+    supplied it is bound to every Signal adapter the factory builds (through
+    the existing ``register_signal_adapter`` builder contract), so the
+    production composition owns the Signal producer seam without any parallel
+    registry or runtime.  When omitted (default), the Signal adapter is
+    registered exactly as before (passive queue / no producer).
+
+    Args:
+        signal_transport: Optional ``SignalTransport`` implementation
+            (``app.event_sources.adapters.signal_transport.SignalTransport``).
+            Injection only; no live Signal connectivity is established here.
 
     Returns:
         An ``AdapterFactory`` able to resolve all six adapter types.
@@ -211,7 +275,7 @@ def build_production_adapter_factory() -> AdapterFactory:
     factory = AdapterFactory()
     register_atak_adapter(factory)
     register_mqtt_adapter(factory)
-    register_signal_adapter(factory)
+    register_signal_adapter(factory, transport=signal_transport)
     register_radio_adapter(factory)
     register_telegram_adapter(factory)
     register_multicast_audio_adapter(factory)

@@ -145,8 +145,10 @@ def _production_radio(runtime):
     provider = build_production_source_provider()
     factory = build_production_adapter_factory()
     registered = main.register_sources(runtime, provider, factory)
-    assert registered == ["radio"]
-    assert runtime.supervisor.list_runtimes() == ["radio"]
+    # WO-075: the production catalog also declares the Signal source, so the
+    # production registration path builds BOTH production sources.
+    assert registered == ["radio", "signal"]
+    assert runtime.supervisor.list_runtimes() == ["radio", "signal"]
     aruntime = runtime.supervisor.get_runtime("radio")
     adapter = aruntime._adapter
     assert isinstance(adapter, MulticastAudioSourceAdapter)
