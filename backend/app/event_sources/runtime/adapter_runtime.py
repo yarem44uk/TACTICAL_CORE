@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from ..interfaces.i_event_source_adapter import IEventSourceAdapter
@@ -56,6 +57,46 @@ from .lifecycle import AdapterState, LifecycleTransitionError, transition
 from .restart_policy import RestartPolicy
 
 logger = logging.getLogger(__name__)
+
+
+class IngestStatus:
+    """Outcome classification for a synchronous ingress submission (WO-080).
+
+    Mirrors the four states the WhatsApp ingress must distinguish:
+
+        NEW       — the canonical event was committed durably by this call;
+        DUPLICATE — the deterministic canonical identity was already durable;
+        INVALID   — the raw event could not be turned into a canonical Event
+                    (or the pipeline rejected it): nothing was persisted;
+        FAILURE   — canonical processing/persistence failed: nothing is
+                    assumed durable.
+    """
+
+    NEW = "NEW"
+    DUPLICATE = "DUPLICATE"
+    INVALID = "INVALID"
+    FAILURE = "FAILURE"
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    """Result of ``AdapterRuntime.submit_raw`` (WO-080 synchronous seam).
+
+    Attributes:
+        status: One of ``IngestStatus``.
+        event_id: The resolved canonical ``event_id`` (None when the raw event
+            could not even be converted to a canonical Event).
+        durable: True ONLY when durable persistence of ``event_id`` was
+            positively confirmed (via the configured durability probe).  A
+            caller that must not acknowledge before durability (the WhatsApp
+            ingress) MUST check this flag; it is never optimistically True.
+        error: Non-secret error text when status is INVALID/FAILURE.
+    """
+
+    status: str
+    event_id: str | None = None
+    durable: bool = False
+    error: str | None = None
 
 
 class AdapterRuntime:
@@ -102,6 +143,13 @@ class AdapterRuntime:
         self._started_at: float | None = None
         self._events_processed: int = 0
         self._consecutive_failures: int = 0
+
+        # WO-080 — additive synchronous ingress seam (see submit_raw).
+        # Optional read-only durability probe: probe(event_id) -> bool.  When
+        # set, submit_raw uses it to distinguish NEW from DUPLICATE and to
+        # confirm durable persistence before reporting success.  It is never
+        # used by the polling path.
+        self._ingest_durability_probe: Any = None
 
     # --- Public lifecycle ---
 
@@ -345,6 +393,120 @@ class AdapterRuntime:
 
         with self._lock:
             self._events_processed += 1
+
+    # --- WO-080 synchronous ingress seam ---------------------------------
+
+    def set_ingest_durability_probe(self, probe: Any) -> None:
+        """Attach an optional read-only durability probe (WO-080).
+
+        Args:
+            probe: A callable ``probe(event_id) -> bool`` that reports whether
+                a canonical ``event_id`` is already durably persisted.  It is a
+                READ-ONLY existence check on the canonical durable store (no
+                write, no second store) and is used ONLY by :meth:`submit_raw`
+                to distinguish NEW from DUPLICATE and to confirm durability
+                before reporting success.  Pass ``None`` to detach.
+
+        This setter is additive: it changes no existing behaviour and is never
+        consulted by the polling path (``_poll_forever`` / ``_process_raw``).
+        """
+        self._ingest_durability_probe = probe
+
+    def submit_raw(self, raw: dict[str, Any]) -> IngestResult:
+        """Synchronously ingest one raw event and report its durable outcome.
+
+        WO-080 — additive synchronous ingress seam for the WhatsApp webhook
+        ingress.  This is the SAME canonical path as the polling loop
+        (``raw -> IEventFactory.create_event -> IEventPipeline.process``) with
+        one deliberate difference: it does **not** swallow failures.  It
+        returns an explicit :class:`IngestResult` so an ingress HTTP layer can
+        honour commit-before-ACK semantics — return success ONLY after durable
+        persistence has been positively confirmed.
+
+        Unlike ``_process_raw`` it never marks the runtime DEGRADED and never
+        consumes the restart budget: an ingress-side rejection is a property of
+        the submitted payload, not of the source, so the runtime stays RUNNING.
+
+        Args:
+            raw: A normalized raw source dict (adapter/transport shaped), NOT a
+                canonical Event.
+
+        Returns:
+            An :class:`IngestResult`.  ``durable`` is True only when the
+            configured durability probe confirmed the ``event_id`` is durable.
+            When no probe is configured, ``durable`` is False (unconfirmed) —
+            an ingress that requires durability MUST configure a probe.
+        """
+        try:
+            event = self._factory.create_event(
+                raw_data=raw,
+                source_name=self._name,
+            )
+        except Exception as e:
+            logger.warning(
+                "Runtime '%s' rejected raw event: factory error: %s",
+                self._name,
+                e,
+            )
+            return IngestResult(status=IngestStatus.INVALID, error=str(e))
+
+        event_id = getattr(event, "event_id", None)
+        probe = self._ingest_durability_probe
+
+        already_present = self._probe(probe, event_id)
+
+        try:
+            accepted = self._pipeline.process(event)
+        except Exception as e:
+            logger.warning(
+                "Runtime '%s' ingress persistence error: %s", self._name, e
+            )
+            return IngestResult(
+                status=IngestStatus.FAILURE, event_id=event_id, error=str(e)
+            )
+
+        if accepted is False:
+            # A pipeline filter/middleware rejected the event: nothing durable.
+            return IngestResult(
+                status=IngestStatus.INVALID,
+                event_id=event_id,
+                error="pipeline rejected event",
+            )
+
+        with self._lock:
+            self._events_processed += 1
+
+        # Commit-before-ACK: only report success once durability is confirmed.
+        if probe is None:
+            return IngestResult(
+                status=IngestStatus.NEW, event_id=event_id, durable=False
+            )
+
+        if not self._probe(probe, event_id):
+            return IngestResult(
+                status=IngestStatus.FAILURE,
+                event_id=event_id,
+                error="durable persistence not confirmed",
+            )
+
+        return IngestResult(
+            status=(
+                IngestStatus.DUPLICATE if already_present else IngestStatus.NEW
+            ),
+            event_id=event_id,
+            durable=True,
+        )
+
+    @staticmethod
+    def _probe(probe: Any, event_id: str | None) -> bool:
+        """Run the durability probe defensively (never raises)."""
+        if probe is None or event_id is None:
+            return False
+        try:
+            return bool(probe(event_id))
+        except Exception as e:  # noqa: BLE001 - a probe failure is not durable
+            logger.warning("Runtime durability probe failed: %s", e)
+            return False
 
     def _mark_degraded(self) -> None:
         with self._lock:
