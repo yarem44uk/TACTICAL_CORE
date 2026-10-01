@@ -234,6 +234,30 @@ EVENT_TYPE_MAPPINGS = {
         required_fields=["endpoint"],
         field_mapping={},
     ),
+    # WO-080 — WhatsApp Cloud API inbound webhook message.
+    #
+    # A SINGLE observation kind covers every WhatsApp message category
+    # (text/image/audio/video/document): observation_type/source_type are
+    # coarse and the concrete category is carried in the evidence payload
+    # (``raw_data.message_type`` and ``raw_data.media``), not in the
+    # observation kind.  ``required_fields`` are the two fields that every
+    # accepted WhatsApp message carries after normalization and are NOT
+    # ``chat_id`` (WhatsApp webhook messages have no Telegram/Signal-style
+    # chat id).  ``message_text`` is intentionally omitted from field_mapping
+    # (unlike signal.message) because a media message may carry no text; the
+    # mapper only copies a mapped field when it is actually present.
+    "whatsapp.message": ObservationMapping(
+        event_type="whatsapp.message",
+        observation_type="other",
+        source_type="plugin",
+        default_confidence=0.7,
+        required_fields=["message_id", "phone_number_id"],
+        field_mapping={
+            "sender": "source",
+            "text": "content",
+            "phone_number_id": "channel",
+        },
+    ),
 }
 
 # Default mapping for unknown event types

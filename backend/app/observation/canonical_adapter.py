@@ -62,6 +62,12 @@ _SOURCE_TO_EVENT_TYPE: Dict[str, str] = {
     "atak": "atak.map_object",
     "mqtt": "mqtt.message",
     "telegram": "telegram.message",
+    # WO-080: WhatsApp Cloud API webhook messages.  This is the AUTHORITATIVE
+    # derivation for WhatsApp observation type: AdapterRuntime constructs
+    # canonical events via EventFactory without an explicit event_type, so the
+    # canonical Event is EventType.CUSTOM and the observation layer keys on
+    # Event.source (mirrors EVENT_TYPE_MAPPINGS in app.observation.models).
+    "whatsapp": "whatsapp.message",
 }
 
 

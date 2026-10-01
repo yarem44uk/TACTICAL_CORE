@@ -150,6 +150,41 @@ PRODUCTION_SOURCE_CATALOG: list[SourceDefinition] = [
 ]
 
 
+def build_whatsapp_source_definition() -> SourceDefinition:
+    """Build the ``whatsapp`` source definition for the WO-080 ingress process.
+
+    This is an ADDITIVE builder (WO-080).  It is deliberately NOT appended to
+    ``PRODUCTION_SOURCE_CATALOG``: the WhatsApp Cloud API webhook ingress is a
+    SEPARATE process with its own composition (ADR-015 §5), so the durable-core
+    production process (``backend/main.py``) must not gain a producer-less
+    WhatsApp source.  The ingress composition registers it through the SAME
+    existing mechanism (``SourceDefinition`` -> ``AdapterFactory`` ->
+    ``ProductionSourceRegistrar`` -> ``AdapterSupervisor``/``AdapterRuntime``)
+    by passing a single-source catalog to ``build_production_source_provider``.
+
+    ``adapter_type`` must match the type registered by
+    ``register_whatsapp_adapter`` (``WHATSAPP_ADAPTER_TYPE`` == ``"whatsapp"``).
+
+    Secrets: ``credentials_ref`` is a REFERENCE to the embedding deployment's
+    credential entry only — never a secret value (ADR-010).  The App Secret and
+    Verify Token are owned by the ingress process environment (ADR-015 §12) and
+    are NOT carried in the catalog or in ``config``.
+    """
+    return SourceDefinition(
+        name="whatsapp",
+        adapter_type="whatsapp",
+        enabled=True,
+        config={
+            "source_name": "whatsapp",
+            # Logical webhook path label (non-secret; informational).
+            "webhook_path": "/webhook",
+        },
+        # Reference-only: the name of the credential-store entry an embedding
+        # deployment provisions for the Meta app.  No secret value here.
+        credentials_ref="whatsapp/production",
+    )
+
+
 class ProductionSourceConfigProvider(ISourceConfigProvider):
     """Concrete production ``ISourceConfigProvider`` backed by a static catalog.
 

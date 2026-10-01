@@ -123,6 +123,28 @@ def _radio_identity(raw: dict[str, Any]) -> Optional[str]:
     return f"radio|{_canonicalize(frequency)}|{_canonicalize(callsign)}"
 
 
+def _whatsapp_identity(raw: dict[str, Any]) -> Optional[str]:
+    # WO-080: WhatsApp Cloud API webhook messages carry a globally unique
+    # message id (``wamid``/``id``) but NO Telegram/Signal-style ``chat_id``.
+    # Reusing the ``_native(raw, "chat_id", "message_id")`` shape would return
+    # None for every WhatsApp message and silently fall back to a
+    # non-deduplicable UUID4.  The identity is therefore keyed explicitly on
+    # the deployment-scoped ``phone_number_id`` (which scopes the message id to
+    # one business phone number) plus the WhatsApp ``message_id``.
+    #
+    # The prefix follows the established "<source>|<material>" policy shape
+    # (cf. ``_atak_identity``).  Both fields are emitted by
+    # ``WhatsAppPayloadNormalizer``.
+    phone_number_id = raw.get("phone_number_id")
+    message_id = raw.get("message_id")
+    if phone_number_id is None or message_id is None:
+        return None
+    return (
+        f"whatsapp|{_canonicalize(phone_number_id)}|"
+        f"{_canonicalize(message_id)}"
+    )
+
+
 # Mapping: adapter source_name -> identity-material policy.
 _IDENTITY_POLICIES: dict[str, Any] = {
     "atak": _atak_identity,
@@ -130,6 +152,7 @@ _IDENTITY_POLICIES: dict[str, Any] = {
     "signal": _signal_identity,
     "mqtt": _mqtt_identity,
     "radio": _radio_identity,
+    "whatsapp": _whatsapp_identity,
 }
 
 
