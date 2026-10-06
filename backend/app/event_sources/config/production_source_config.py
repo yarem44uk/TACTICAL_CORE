@@ -185,6 +185,44 @@ def build_whatsapp_source_definition() -> SourceDefinition:
     )
 
 
+def build_telegram_source_definition() -> SourceDefinition:
+    """Build the ``telegram`` source definition for the WO-083 ingress process.
+
+    This is an ADDITIVE builder (WO-083).  It is deliberately NOT appended to
+    ``PRODUCTION_SOURCE_CATALOG``: the Telegram Bot API webhook ingress is a
+    SEPARATE process with its own composition, so the durable-core production
+    process (``backend/main.py``) must not gain a producer-less Telegram source.
+    ``PRODUCTION_SOURCE_CATALOG`` is therefore unchanged (WO-083 §18).
+
+    The adapter type ``"telegram"`` is ALREADY resolvable by the production
+    adapter factory: ``build_production_adapter_factory()`` registers it through
+    the existing ``register_telegram_adapter`` helper (ADR-010 / WO-013-008).
+    WO-083 adds no registration and no factory change.  Being resolvable is NOT
+    the same as being declared: Telegram was absent from the production catalog
+    (WO-082 GATE I), and WO-083 is not authorised to change that catalog.
+
+    ``adapter_type`` must match ``TELEGRAM_ADAPTER_TYPE`` == ``"telegram"``.
+
+    Secrets: ``credentials_ref`` is a REFERENCE to the embedding deployment's
+    credential entry only — never a secret value (ADR-010).  The webhook secret
+    token is owned by the ingress process environment (WO-083 §9) and is NOT
+    carried in the catalog or in ``config``.
+    """
+    return SourceDefinition(
+        name="telegram",
+        adapter_type="telegram",
+        enabled=True,
+        config={
+            "source_name": "telegram",
+            # Logical webhook path label (non-secret; informational).
+            "webhook_path": "/telegram/webhook",
+        },
+        # Reference-only: the name of the credential-store entry an embedding
+        # deployment provisions for the Telegram bot.  No secret value here.
+        credentials_ref="telegram/production",
+    )
+
+
 class ProductionSourceConfigProvider(ISourceConfigProvider):
     """Concrete production ``ISourceConfigProvider`` backed by a static catalog.
 
